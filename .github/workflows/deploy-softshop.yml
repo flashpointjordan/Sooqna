@@ -1,0 +1,333 @@
+name: Deploy Softshop
+
+on:
+  push:
+    branches:
+      - softshop
+
+concurrency:
+  group: deploy-softshop
+  cancel-in-progress: true
+
+env:
+  SOFTSHOP_SITE_URL: https://sooqna.shop
+  SOFTSHOP_API_URL: https://sooqna.shop/api
+  SOFTSHOP_UPLOADS_URL: https://sooqna.shop/uploads
+  SOFTSHOP_BACKEND_PORT: "5001"
+  SOFTSHOP_WEB_PORT: "3004"
+  SOFTSHOP_BRANCH: softshop
+
+jobs:
+  backend_checks:
+    name: Backend Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/sooqna-backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/sooqna-backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        env:
+          NODE_ENV: test
+          ENABLE_CATEGORIES_JSON_FALLBACK: "true"
+          DATABASE_URL: postgresql://test:test@127.0.0.1:5432/test?schema=public
+        run: npm test -- --runInBand
+
+      - name: Build
+        run: npm run build
+
+  web_checks:
+    name: Web Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate WordPress redirect mapping
+        run: npm run validate:redirects
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_SITE_URL: ${{ env.SOFTSHOP_SITE_URL }}
+          NEXT_PUBLIC_BACKEND_API_BASE_URL: ${{ env.SOFTSHOP_API_URL }}
+          NEXT_PUBLIC_UPLOADS_PUBLIC_BASE_URL: ${{ env.SOFTSHOP_UPLOADS_URL }}
+          NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder-api-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-placeholder-auth-domain
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-placeholder-project-id
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ci-placeholder-sender-id
+          NEXT_PUBLIC_FIREBASE_APP_ID: ci-placeholder-app-id
+          NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID: ci-placeholder-measurement-id
+        run: npm run build
+
+  deploy_softshop:
+    name: Deploy Softshop
+    runs-on: ubuntu-latest
+    needs:
+      - backend_checks
+      - web_checks
+    environment: production
+    steps:
+      - name: Validate deployment secrets
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          BACKEND_DATABASE_URL: ${{ secrets.BACKEND_DATABASE_URL }}
+          BACKEND_FIREBASE_PROJECT_ID: ${{ secrets.BACKEND_FIREBASE_PROJECT_ID }}
+          BACKEND_FIREBASE_CLIENT_EMAIL: ${{ secrets.BACKEND_FIREBASE_CLIENT_EMAIL }}
+          BACKEND_FIREBASE_PRIVATE_KEY: ${{ secrets.BACKEND_FIREBASE_PRIVATE_KEY }}
+          BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH: ${{ secrets.BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH }}
+          BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS: ${{ secrets.BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS }}
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+        run: |
+          set -e
+          required_vars=(
+            DEPLOY_HOST
+            DEPLOY_USER
+            DEPLOY_PORT
+            DEPLOY_APP_DIR
+            DEPLOY_SSH_KEY
+            BACKEND_DATABASE_URL
+            NEXT_PUBLIC_FIREBASE_API_KEY
+            NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+            NEXT_PUBLIC_FIREBASE_PROJECT_ID
+            NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+            NEXT_PUBLIC_FIREBASE_APP_ID
+          )
+
+          if [ -z "$BACKEND_FIREBASE_PROJECT_ID" ]; then
+            export BACKEND_FIREBASE_PROJECT_ID="$NEXT_PUBLIC_FIREBASE_PROJECT_ID"
+          fi
+
+          missing=0
+
+          if [ -z "$BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH" ] &&
+             [ -z "$BACKEND_FIREBASE_CLIENT_EMAIL" ] &&
+             [ -z "$BACKEND_FIREBASE_PRIVATE_KEY" ] &&
+             [ "$BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS" != "true" ]; then
+            echo "::error::Missing Firebase Admin credentials."
+            missing=1
+          fi
+
+          if { [ -n "$BACKEND_FIREBASE_CLIENT_EMAIL" ] || [ -n "$BACKEND_FIREBASE_PRIVATE_KEY" ]; } &&
+             { [ -z "$BACKEND_FIREBASE_CLIENT_EMAIL" ] || [ -z "$BACKEND_FIREBASE_PRIVATE_KEY" ]; }; then
+            echo "::error::Both BACKEND_FIREBASE_CLIENT_EMAIL and BACKEND_FIREBASE_PRIVATE_KEY are required."
+            missing=1
+          fi
+
+          for var_name in "${required_vars[@]}"; do
+            if [ -z "${!var_name}" ]; then
+              echo "::error::Missing required secret: ${var_name}"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Deploy softshop backend and web
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+          BACKEND_DATABASE_URL: ${{ secrets.BACKEND_DATABASE_URL }}
+          BACKEND_FIREBASE_PROJECT_ID: ${{ secrets.BACKEND_FIREBASE_PROJECT_ID }}
+          BACKEND_FIREBASE_CLIENT_EMAIL: ${{ secrets.BACKEND_FIREBASE_CLIENT_EMAIL }}
+          BACKEND_FIREBASE_PRIVATE_KEY: ${{ secrets.BACKEND_FIREBASE_PRIVATE_KEY }}
+          BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH: ${{ secrets.BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH }}
+          BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS: ${{ secrets.BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS }}
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+          NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SOFTSHOP_SITE_URL: ${{ env.SOFTSHOP_SITE_URL }}
+          SOFTSHOP_API_URL: ${{ env.SOFTSHOP_API_URL }}
+          SOFTSHOP_UPLOADS_URL: ${{ env.SOFTSHOP_UPLOADS_URL }}
+          SOFTSHOP_BACKEND_PORT: ${{ env.SOFTSHOP_BACKEND_PORT }}
+          SOFTSHOP_WEB_PORT: ${{ env.SOFTSHOP_WEB_PORT }}
+          SOFTSHOP_BRANCH: ${{ env.SOFTSHOP_BRANCH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          script_stop: false
+          envs: DEPLOY_APP_DIR,BACKEND_DATABASE_URL,BACKEND_FIREBASE_PROJECT_ID,BACKEND_FIREBASE_CLIENT_EMAIL,BACKEND_FIREBASE_PRIVATE_KEY,BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH,BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS,NEXT_PUBLIC_FIREBASE_API_KEY,NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,NEXT_PUBLIC_FIREBASE_PROJECT_ID,NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,NEXT_PUBLIC_FIREBASE_APP_ID,NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,RESEND_API_KEY,SOFTSHOP_SITE_URL,SOFTSHOP_API_URL,SOFTSHOP_UPLOADS_URL,SOFTSHOP_BACKEND_PORT,SOFTSHOP_WEB_PORT,SOFTSHOP_BRANCH
+          script: |
+            set -Eeo pipefail
+
+            echo "===== START SOFTSHOP DEPLOY ====="
+
+            SOFTSHOP_APP_DIR="${DEPLOY_APP_DIR%/}-softshop"
+            echo "Softshop app dir: ${SOFTSHOP_APP_DIR}"
+
+            if [ ! -d "$DEPLOY_APP_DIR/.git" ]; then
+              echo "Existing DEPLOY_APP_DIR is not a git checkout: $DEPLOY_APP_DIR"
+              exit 1
+            fi
+
+            mkdir -p "$SOFTSHOP_APP_DIR"
+
+            if [ ! -d "$SOFTSHOP_APP_DIR/.git" ]; then
+              echo "Initializing softshop checkout from existing production remote..."
+              git clone "$(git -C "$DEPLOY_APP_DIR" remote get-url origin)" "$SOFTSHOP_APP_DIR"
+            fi
+
+            cd "$SOFTSHOP_APP_DIR"
+            git config --global --add safe.directory "$SOFTSHOP_APP_DIR"
+            git fetch origin
+            git checkout -B "$SOFTSHOP_BRANCH" "origin/$SOFTSHOP_BRANCH"
+            git reset --hard "origin/$SOFTSHOP_BRANCH"
+            git clean -fd \
+              -e backend/sooqna-backend/uploads/ \
+              -e apps/web/.env.local
+
+            # =========================
+            # Backend deployment
+            # =========================
+            cd backend/sooqna-backend
+
+            echo "Installing backend dependencies..."
+            npm ci --production=false --include=dev
+
+            echo "Generating Prisma client..."
+            npm run prisma:generate
+
+            echo "Building backend..."
+            npm run build
+
+            DB_URL_RAW="${BACKEND_DATABASE_URL-}"
+            DB_URL="${DB_URL_RAW#DATABASE_URL=}"
+            DB_URL="${DB_URL%\"}"
+            DB_URL="${DB_URL#\"}"
+            DB_URL="${DB_URL%\'}"
+            DB_URL="${DB_URL#\'}"
+            DB_URL="${DB_URL//$'\r'/}"
+            DB_URL="${DB_URL//$'\n'/}"
+            if [ -z "$DB_URL" ]; then
+              echo "BACKEND_DATABASE_URL is required and cannot be empty."
+              exit 1
+            fi
+            if [[ "$DB_URL" != postgresql://* && "$DB_URL" != postgres://* ]]; then
+              echo "BACKEND_DATABASE_URL is invalid. Expected postgresql:// or postgres://"
+              exit 1
+            fi
+            export DATABASE_URL="$DB_URL"
+
+            BACKEND_FIREBASE_PROJECT_ID="${BACKEND_FIREBASE_PROJECT_ID:-${NEXT_PUBLIC_FIREBASE_PROJECT_ID}}"
+
+            echo "Writing softshop backend .env..."
+            {
+              echo "NODE_ENV=production"
+              echo "PORT=${SOFTSHOP_BACKEND_PORT}"
+              echo "CORS_ORIGIN=${SOFTSHOP_SITE_URL},https://www.sooqna.shop"
+              echo "TRUST_PROXY=1"
+              echo "FIREBASE_PROJECT_ID=${BACKEND_FIREBASE_PROJECT_ID}"
+              echo "FIREBASE_CLIENT_EMAIL=${BACKEND_FIREBASE_CLIENT_EMAIL}"
+              echo "FIREBASE_PRIVATE_KEY=${BACKEND_FIREBASE_PRIVATE_KEY}"
+              echo "FIREBASE_SERVICE_ACCOUNT_PATH=${BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH}"
+              echo "FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS=${BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS:-false}"
+              echo "ENABLE_CATEGORIES_JSON_FALLBACK=false"
+              echo "RECAPTCHA_ENABLED=false"
+              echo "DATABASE_URL=${DATABASE_URL}"
+              echo "UPLOADS_PUBLIC_BASE_URL=${SOFTSHOP_UPLOADS_URL}"
+              echo "BACKEND_PUBLIC_ORIGIN=${SOFTSHOP_SITE_URL}"
+              echo "RESEND_API_KEY=${RESEND_API_KEY}"
+            } > .env
+
+            echo "Running shared database migrations..."
+            npx prisma migrate deploy
+
+            echo "Running backend DB preflight check..."
+            npm run db:check
+
+            echo "Seeding categories from JSON..."
+            npm run db:migrate-json
+
+            echo "Restarting softshop backend with PM2..."
+            pm2 restart softshop-backend --update-env || pm2 start dist/server.js --name softshop-backend --update-env
+
+            cd ../..
+
+            # =========================
+            # Web deployment
+            # =========================
+            cd apps/web
+
+            echo "Writing softshop web .env.local..."
+            {
+              echo "NEXT_PUBLIC_BACKEND_API_BASE_URL=${SOFTSHOP_API_URL}"
+              echo "NEXT_PUBLIC_UPLOADS_PUBLIC_BASE_URL=${SOFTSHOP_UPLOADS_URL}"
+              echo "NEXT_PUBLIC_SITE_URL=${SOFTSHOP_SITE_URL}"
+              echo "NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY}"
+              echo "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}"
+              echo "NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID}"
+              echo "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}"
+              echo "NEXT_PUBLIC_FIREBASE_APP_ID=${NEXT_PUBLIC_FIREBASE_APP_ID}"
+              echo "NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=${NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID}"
+              echo "NEXT_PUBLIC_SITEMAP_LISTINGS_LIMIT=200"
+              echo "NEXT_PUBLIC_SITEMAP_FETCH_TIMEOUT_MS=7000"
+              echo "NEXT_PUBLIC_AUTH_DEBUG=false"
+            } > .env.local
+
+            echo "Installing web dependencies..."
+            npm ci
+
+            echo "Building web app..."
+            npm run build
+
+            echo "Restarting softshop web with PM2..."
+            pm2 restart softshop-web --update-env || pm2 start "npm run start -- -p ${SOFTSHOP_WEB_PORT}" --name softshop-web --update-env
+
+            echo "===== SOFTSHOP DEPLOY FINISHED ====="
+
+      - name: Health check softshop backend
+        run: |
+          echo "Waiting 15s for PM2 processes to stabilize..."
+          sleep 15
+          curl --fail --show-error --silent "${SOFTSHOP_API_URL}/health"
+          echo ""
+          echo "Softshop health check passed."
