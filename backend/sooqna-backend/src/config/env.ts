@@ -1,4 +1,5 @@
 import * as dotenv from "dotenv";
+import { parseTrustProxy, validateProductionTrustProxy } from "./trustProxy";
 
 dotenv.config();
 
@@ -41,16 +42,6 @@ function parseCsv(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
-function parseTrustProxy(value: string | undefined): boolean | number | string {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true") return true;
-  if (normalized === "false") return false;
-  const numeric = Number(normalized);
-  if (Number.isInteger(numeric) && numeric >= 0) return numeric;
-  return value.trim();
-}
-
 const enableCategoriesJsonFallback = parseBoolean(
   process.env.ENABLE_CATEGORIES_JSON_FALLBACK,
   false
@@ -63,6 +54,9 @@ const requireDatabase = isProduction || !enableCategoriesJsonFallback;
 const corsOrigins = parseCsv(
   process.env.CORS_ORIGIN ?? (isProduction ? undefined : "http://localhost:3000")
 ).map((origin) => origin.replace(/\/+$/, ""));
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+
+validateProductionTrustProxy(nodeEnv, trustProxy);
 
 if (!databaseUrl && requireDatabase) {
   throw new Error(
@@ -92,7 +86,7 @@ export const env = {
     ? (() => { throw new Error("CORS_ORIGIN env var is required in production."); })()
     : "http://localhost:3000"),
   corsOrigins,
-  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+  trustProxy,
   /**
    * Emails that should always be promoted to the ADMIN role on login/profile
    * sync. Used to bootstrap the first admin (no UI exists for the first one).

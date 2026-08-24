@@ -251,6 +251,7 @@ jobs:
             {
               echo "NODE_ENV=production"
               echo "PORT=5000"
+              echo "TRUST_PROXY=1"
               echo "CORS_ORIGIN=${NEXT_PUBLIC_SITE_URL}"
               echo "FIREBASE_PROJECT_ID=${BACKEND_FIREBASE_PROJECT_ID}"
               echo "FIREBASE_CLIENT_EMAIL=${BACKEND_FIREBASE_CLIENT_EMAIL}"
