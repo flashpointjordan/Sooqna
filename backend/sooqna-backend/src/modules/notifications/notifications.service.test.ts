@@ -14,6 +14,7 @@ const active = (id: string, overrides: Partial<StoredNotification> = {}): Stored
 class MemoryRepo implements NotificationsRepository {
   rows: StoredNotification[] = [];
   preferences = new Map<string, boolean>();
+  processedAggregateDedupe = new Set<string>();
   async listActive(userId: string, query: { limit: number; cursor?: string; category?: NotificationCategory; unread?: boolean }, at: Date) {
     let rows = this.rows.filter((row) => row.userId === userId && !row.deletedAt && row.expiresAt > at && (!query.category || row.category === query.category) && (query.unread === undefined || (query.unread ? !row.readAt : !!row.readAt)));
     rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
@@ -31,7 +32,7 @@ class MemoryRepo implements NotificationsRepository {
   async findByDedupeKey(key: string) { return this.rows.find((row) => row.dedupeKey === key) ?? null; }
   async findCurrentAggregate(key: string) { return this.rows.find((row) => row.aggregationKey === key && !row.deletedAt) ?? null; }
   async create(input: Omit<StoredNotification, "id" | "updatedAt">) { const row = active(`n-${this.rows.length + 1}`, { ...input, updatedAt: input.createdAt }); this.rows.push(row); return row; }
-  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); const processed = Array.isArray(row?.metadata.processedDedupeKeys) ? row.metadata.processedDedupeKeys : []; if (row && input.dedupeKey && processed.includes(input.dedupeKey)) return { row, changed: false }; const metadata = { ...input.metadata, ...(input.dedupeKey ? { processedDedupeKeys: [...processed, input.dedupeKey].slice(-100) } : {}) }; if (row) { Object.assign(row, { ...input, metadata, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create({ ...input, metadata }), changed: true }; }
+  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && this.processedAggregateDedupe.has(input.dedupeKey)) return { row: row!, changed: false }; if (input.dedupeKey) this.processedAggregateDedupe.add(input.dedupeKey); if (row) { Object.assign(row, { ...input, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create(input), changed: true }; }
   async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { const row = this.rows.find((item) => item.id === id)!; Object.assign(row, input, { readAt: null }); return row; }
 }
 
@@ -126,7 +127,7 @@ describe("NotificationsService", () => {
     await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" });
     await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" });
     await Promise.all([service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" }), service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" })]);
-    expect(repo.rows).toHaveLength(1); expect(publishSignal).toHaveBeenCalledTimes(2);
+    expect(repo.rows).toHaveLength(1); expect(repo.rows[0].metadata).not.toHaveProperty("processedDedupeKeys"); expect(publishSignal).toHaveBeenCalledTimes(2);
   });
 
   it("does not publish a signal for idempotent read, delete, or read-all no-ops", async () => {

@@ -6,6 +6,7 @@ const mockNotificationFindFirst = jest.fn();
 const mockNotificationUpdate = jest.fn();
 const mockNotificationCreate = jest.fn();
 const mockTransaction = jest.fn();
+const mockOutboxFindUnique = jest.fn(); const mockOutboxCreate = jest.fn(); const mockOutboxUpdate = jest.fn();
 const mockPrisma = {
   notificationPreference: { findMany: jest.fn(), upsert: jest.fn() },
   notification: { findFirst: jest.fn(), update: jest.fn(), create: jest.fn() },
@@ -29,6 +30,7 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
       $executeRaw: mockExecuteRaw,
       notificationPreference: { upsert: mockPreferenceUpsert },
       notification: { findFirst: mockNotificationFindFirst, update: mockNotificationUpdate, create: mockNotificationCreate },
+      notificationOutbox: { findUnique: mockOutboxFindUnique, create: mockOutboxCreate, update: mockOutboxUpdate },
     }));
   });
 
@@ -41,11 +43,18 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
   });
 
   it("serializes same-key aggregate persistence in a database transaction and reopens the row", async () => {
-    mockNotificationFindFirst.mockResolvedValue(row); mockNotificationUpdate.mockResolvedValue({ ...row, readAt: null, title: "new" });
+    mockNotificationFindFirst.mockResolvedValue(row); mockNotificationUpdate.mockResolvedValue({ ...row, readAt: null, title: "new" }); mockOutboxFindUnique.mockResolvedValue({ state: "PENDING" }); mockOutboxUpdate.mockResolvedValue({});
     const result = await new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: "new", body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: row.dedupeKey, aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt });
     expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
     expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ readAt: null, title: "new" }) }));
+    expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ metadata: row.metadata }) }));
     expect(result.row.readAt).toBeNull();
+  });
+
+  it("uses the internal processed outbox ledger to make old aggregate replays no-ops", async () => {
+    mockNotificationFindFirst.mockResolvedValue(row); mockOutboxFindUnique.mockResolvedValue({ state: "PROCESSED" });
+    const result = await new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: "event-old", aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt });
+    expect(result.changed).toBe(false); expect(mockNotificationUpdate).not.toHaveBeenCalled(); expect(mockNotificationCreate).not.toHaveBeenCalled();
   });
 });
