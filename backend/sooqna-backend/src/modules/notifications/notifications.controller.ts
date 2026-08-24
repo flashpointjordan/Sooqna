@@ -4,6 +4,7 @@ import { sendSuccess } from "../../shared/contracts/api";
 import { PrismaNotificationsRepository } from "./notifications.repository";
 import { notificationListQuerySchema } from "./notifications.schemas";
 import { NotificationsService } from "./notifications.service";
+import { getNotificationBroker, NotificationBroker } from "./notifications.broker";
 
 export type NotificationsControllerService = Pick<NotificationsService, "list" | "unreadCount" | "markRead" | "markAllRead" | "delete" | "getPreferences" | "updatePreferences">;
 const service = new NotificationsService(new PrismaNotificationsRepository());
@@ -27,3 +28,42 @@ export function createNotificationsController(service: NotificationsControllerSe
   };
 }
 export const { listNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead, deleteNotification, getNotificationPreferences, updateNotificationPreferences } = createNotificationsController(service);
+
+export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount">) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const uid = userId(req);
+    if (broker.activeCount(uid) >= 3) throw new AppError(429, "Too many notification streams.", "TOO_MANY_STREAMS");
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    res.write("retry: 5000\n\n");
+    const unsubscribe = broker.subscribe(uid, res);
+    let cleaned = false;
+    let heartbeat: NodeJS.Timeout | undefined;
+    const onAbort = () => cleanup();
+    const onRequestClose = () => cleanup();
+    const onResponseClose = () => cleanup();
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (heartbeat) clearInterval(heartbeat);
+      unsubscribe();
+      req.off("aborted", onAbort);
+      req.off("close", onRequestClose);
+      res.off("close", onResponseClose);
+    };
+    heartbeat = setInterval(() => {
+      try { res.write(": heartbeat\n\n"); }
+      catch { cleanup(); }
+    }, 25_000);
+    heartbeat.unref();
+    req.once("aborted", onAbort);
+    req.once("close", onRequestClose);
+    res.once("close", onResponseClose);
+  };
+}
+export async function streamNotifications(req: Request, res: Response): Promise<void> {
+  await createNotificationStreamHandler(getNotificationBroker())(req, res);
+}

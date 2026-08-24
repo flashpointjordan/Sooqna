@@ -6,6 +6,7 @@ import { prisma } from "./config/prisma";
 import { PrismaNotificationsRepository } from "./modules/notifications/notifications.repository";
 import { NotificationsService } from "./modules/notifications/notifications.service";
 import { createNotificationWorker } from "./modules/notifications/notifications.worker";
+import { NotificationBroker, setNotificationBroker } from "./modules/notifications/notifications.broker";
 
 type LifecycleDependencies = {
   listen?: (port: number, callback: () => void) => Server;
@@ -16,9 +17,15 @@ type LifecycleDependencies = {
 
 export function createServerLifecycle(deps: LifecycleDependencies = {}) {
   const repository = new PrismaNotificationsRepository();
+  const broker = new NotificationBroker();
+  setNotificationBroker(broker);
+  const publishSignal = async (userId: string, notificationId: string, unreadCount: number): Promise<void> => {
+    broker.publish(userId, { event: "notification", id: notificationId, unreadCount, version: 1 });
+  };
   const worker = deps.worker ?? createNotificationWorker({
     repository,
-    service: new NotificationsService(repository),
+    service: new NotificationsService(repository, { publishSignal }),
+    publishSignal,
     logger,
   });
   let server: Server | undefined;
