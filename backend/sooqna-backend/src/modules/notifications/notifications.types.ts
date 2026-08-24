@@ -89,7 +89,6 @@ export type NotificationEventPayload =
       eventType: "SECURITY_ALERT";
       recipientId: string;
       alertId: string;
-      securityText: string;
     };
 
 export type NotificationCursor = {
