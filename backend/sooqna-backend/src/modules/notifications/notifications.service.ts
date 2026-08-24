@@ -21,7 +21,7 @@ export type NotificationsRepository = {
   findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null>;
   findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null>;
   create(input: NewNotification): Promise<StoredNotification>;
-  persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence>;
+  persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence | null>;
   updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>): Promise<StoredNotification>;
 };
 type Options = { now?: () => Date; publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void };
@@ -47,6 +47,7 @@ export class NotificationsService {
     const input: NewNotification = { userId: payload.recipientId, type, ...rendered, dedupeKey: options.dedupeKey ?? null, aggregationKey: options.aggregationKey ?? null, readAt: null, deletedAt: null, expiresAt, createdAt };
     if (options.aggregationKey) {
       const result = await this.repo.persistAggregate({ ...input, aggregationKey: options.aggregationKey });
+      if (!result) return null;
       if (result.changed) await this.signal(result.row.userId, result.row.id); return toDto(result.row);
     }
     let row: StoredNotification;
