@@ -11,6 +11,7 @@ type LifecycleDependencies = {
   listen?: (port: number, callback: () => void) => Server;
   worker?: ReturnType<typeof createNotificationWorker>;
   disconnect?: () => Promise<void>;
+  drainTimeoutMs?: number;
 };
 
 export function createServerLifecycle(deps: LifecycleDependencies = {}) {
@@ -22,6 +23,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
   });
   let server: Server | undefined;
   let stopping: Promise<void> | undefined;
+  const drainTimeoutMs = Math.max(1, deps.drainTimeoutMs ?? 10_000);
   return {
     start(): Server {
       if (server) return server;
@@ -34,13 +36,26 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
     async stop(): Promise<void> {
       if (stopping) return stopping;
       stopping = (async () => {
-        await worker.stop();
-        if (server) await new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve()));
-        await (deps.disconnect ?? (() => prisma.$disconnect()))();
+        const closing = server ? new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve())) : Promise.resolve();
+        try {
+          const drained = await waitForWorker(worker.stop(), drainTimeoutMs);
+          if (!drained) logger.warn("Notification worker drain timed out during shutdown.", { drainTimeoutMs });
+          await closing;
+        } finally {
+          await (deps.disconnect ?? (() => prisma.$disconnect()))();
+        }
       })();
       return stopping;
     },
   };
+}
+
+function waitForWorker(workerStop: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref();
+    void workerStop.then(() => { clearTimeout(timer); resolve(true); }, (error: unknown) => { clearTimeout(timer); reject(error); });
+  });
 }
 
 export function startServer() {

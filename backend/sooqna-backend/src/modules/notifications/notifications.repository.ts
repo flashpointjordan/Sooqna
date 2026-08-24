@@ -16,7 +16,7 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
   async recoverStaleProcessing(now: Date, staleBefore: Date): Promise<{ recovered: number; dead: Array<{ id: string; attempts: number }> }> {
     const dead = await prisma.$queryRaw<Array<{ id: string; attempts: number }>>(Prisma.sql`
       UPDATE "NotificationOutbox"
-      SET "state" = 'DEAD'::"NotificationOutboxState"
+      SET "state" = 'DEAD'::"NotificationOutboxState", "updatedAt" = ${now}
       WHERE "state" = 'PROCESSING'::"NotificationOutboxState"
         AND "attempts" >= 8
         AND "updatedAt" < ${staleBefore}
@@ -45,16 +45,19 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
       `);
       if (rows.length === 0) return [];
       await tx.notificationOutbox.updateMany({ where: { id: { in: rows.map((row) => row.id) }, state: { in: [NotificationOutboxState.PENDING, NotificationOutboxState.FAILED] }, attempts: { lt: 8 } }, data: { state: NotificationOutboxState.PROCESSING, attempts: { increment: 1 } } });
-      return rows.map((row) => ({ ...row, state: NotificationOutboxState.PROCESSING, attempts: row.attempts + 1 }));
+      return rows.map((row) => ({ ...row, state: NotificationOutboxState.PROCESSING, attempts: row.attempts + 1, claimAttempt: row.attempts + 1 }));
     });
   }
-  async markProcessed(id: string, now: Date): Promise<void> {
-    await prisma.notificationOutbox.updateMany({ where: { id, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.PROCESSED, processedAt: now, lastError: null } });
+  async markProcessed(id: string, claimAttempt: number, now: Date): Promise<boolean> {
+    const result = await prisma.notificationOutbox.updateMany({ where: { id, attempts: claimAttempt, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.PROCESSED, processedAt: now, lastError: null } });
+    return result.count > 0;
   }
-  async markFailure(id: string, error: string, availableAt: Date, _now: Date): Promise<NotificationOutboxState> {
-    const dead = await prisma.notificationOutbox.updateMany({ where: { id, state: NotificationOutboxState.PROCESSING, attempts: { gte: 8 } }, data: { state: NotificationOutboxState.DEAD, lastError: error.slice(0, 500), availableAt, processedAt: null } });
-    if (dead.count > 0) return NotificationOutboxState.DEAD;
-    const failed = await prisma.notificationOutbox.updateMany({ where: { id, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.FAILED, lastError: error.slice(0, 500), availableAt, processedAt: null } });
+  async markFailure(id: string, claimAttempt: number, error: string, availableAt: Date, _now: Date): Promise<NotificationOutboxState> {
+    if (claimAttempt >= 8) {
+      const dead = await prisma.notificationOutbox.updateMany({ where: { id, attempts: claimAttempt, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.DEAD, lastError: error.slice(0, 500), availableAt, processedAt: null } });
+      if (dead.count > 0) return NotificationOutboxState.DEAD;
+    }
+    const failed = await prisma.notificationOutbox.updateMany({ where: { id, attempts: claimAttempt, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.FAILED, lastError: error.slice(0, 500), availableAt, processedAt: null } });
     return failed.count > 0 ? NotificationOutboxState.FAILED : NotificationOutboxState.PROCESSING;
   }
   async listActive(userId: string, query: NotificationListQuery, now: Date) {
