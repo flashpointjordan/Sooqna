@@ -50,7 +50,7 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ readAt: null, title: "new" }) }));
     expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ metadata: row.metadata }) }));
     expect(mockOutboxUpdate).not.toHaveBeenCalled();
-    expect(result.row.readAt).toBeNull();
+    expect(result).not.toBeNull(); expect(result!.row.readAt).toBeNull();
   });
 
   it("rejects aggregate persistence without the producer-created outbox event", async () => {
@@ -62,6 +62,18 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
   it("uses the internal processed outbox ledger to make old aggregate replays no-ops", async () => {
     mockNotificationFindFirst.mockResolvedValue(row); mockOutboxFindUnique.mockResolvedValue({ state: "PROCESSED" });
     const result = await new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: "event-old", aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt });
-    expect(result.changed).toBe(false); expect(mockNotificationUpdate).not.toHaveBeenCalled(); expect(mockNotificationCreate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ changed: false }); expect(mockNotificationUpdate).not.toHaveBeenCalled(); expect(mockNotificationCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a deleted aggregate for a processed event", async () => {
+    mockNotificationFindFirst.mockResolvedValue(null); mockOutboxFindUnique.mockResolvedValue({ state: "PROCESSED" });
+    await expect(new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: "processed-deleted", aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt })).resolves.toBeNull();
+    expect(mockNotificationCreate).not.toHaveBeenCalled(); expect(mockNotificationUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each(["FAILED", "DEAD"])("does not apply aggregates for %s outbox events", async (state) => {
+    mockNotificationFindFirst.mockResolvedValue(row); mockOutboxFindUnique.mockResolvedValue({ state });
+    await expect(new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: `event-${state}`, aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt })).resolves.toBeNull();
+    expect(mockNotificationCreate).not.toHaveBeenCalled(); expect(mockNotificationUpdate).not.toHaveBeenCalled();
   });
 });

@@ -50,14 +50,15 @@ export class PrismaNotificationsRepository implements NotificationsRepository {
   async findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null> { const row = await prisma.notification.findUnique({ where: { dedupeKey } }); return row && toStored(row); }
   async findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null> { const row = await prisma.notification.findFirst({ where: { aggregationKey, deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }); return row && toStored(row); }
   async create(input: NewNotification): Promise<StoredNotification> { return toStored(await prisma.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } })); }
-  async persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence> {
+  async persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence | null> {
     return prisma.$transaction(async (tx) => {
       await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.aggregationKey}, 0))`);
       const existing = await tx.notification.findFirst({ where: { userId: input.userId, aggregationKey: input.aggregationKey, deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
       if (input.dedupeKey) {
         const ledger = await tx.notificationOutbox.findUnique({ where: { dedupeKey: input.dedupeKey } });
         if (!ledger) throw new AppError(400, "Notification outbox event was not found.", "NOTIFICATION_EVENT_NOT_FOUND");
-        if (ledger.state === NotificationOutboxState.PROCESSED && existing) return { row: toStored(existing), changed: false };
+        if (ledger.state === NotificationOutboxState.PROCESSED) return existing ? { row: toStored(existing), changed: false } : null;
+        if (ledger.state !== NotificationOutboxState.PENDING && ledger.state !== NotificationOutboxState.PROCESSING) return null;
       }
       const result = existing
         ? toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: input.title, body: input.body, actionUrl: input.actionUrl, metadata: input.metadata as Prisma.InputJsonValue, expiresAt: input.expiresAt, readAt: null } }))
