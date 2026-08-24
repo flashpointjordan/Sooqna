@@ -31,7 +31,8 @@ class MemoryRepo implements NotificationsRepository {
   async findByDedupeKey(key: string) { return this.rows.find((row) => row.dedupeKey === key) ?? null; }
   async findCurrentAggregate(key: string) { return this.rows.find((row) => row.aggregationKey === key && !row.deletedAt) ?? null; }
   async create(input: Omit<StoredNotification, "id" | "updatedAt">) { const row = active(`n-${this.rows.length + 1}`, { ...input, updatedAt: input.createdAt }); this.rows.push(row); return row; }
-  async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { const row = this.rows.find((item) => item.id === id)!; Object.assign(row, input); return row; }
+  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (row) { Object.assign(row, input, { readAt: null }); return row; } return this.create(input); }
+  async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { const row = this.rows.find((item) => item.id === id)!; Object.assign(row, input, { readAt: null }); return row; }
 }
 
 const payload = { eventType: NotificationType.LISTING_APPROVED, recipientId: "user-a", listingId: "listing-1", listingTitle: "Bike" } as const;
@@ -91,6 +92,32 @@ describe("NotificationsService", () => {
     const first = await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { dedupeKey: "event-1" });
     const second = await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { dedupeKey: "event-1" });
     expect(repo.rows[0].expiresAt.toISOString()).toBe("2026-11-22T12:00:00.000Z"); expect(second!.id).toBe(first!.id); expect(repo.rows).toHaveLength(1); expect(signals).toEqual([["user-a", first!.id, 1]]);
+  });
+
+  it("refetches a concurrent dedupe conflict without duplicating or publishing", async () => {
+    const repo = new MemoryRepo(); const existing = active("existing", { dedupeKey: "event-race" });
+    let lookups = 0;
+    jest.spyOn(repo, "findByDedupeKey").mockImplementation(async () => (++lookups > 1 ? existing : null));
+    jest.spyOn(repo, "create").mockRejectedValue(Object.assign(new Error("duplicate"), { code: "P2002" }));
+    const publishSignal = jest.fn(); const service = new NotificationsService(repo, { now: () => now, publishSignal });
+    await expect(service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { dedupeKey: "event-race" })).resolves.toMatchObject({ id: "existing" });
+    expect(publishSignal).not.toHaveBeenCalled();
+  });
+
+  it("reopens a read aggregate when fresh aggregate activity is persisted", async () => {
+    const repo = new MemoryRepo(); repo.rows = [active("aggregate", { aggregationKey: "listing-1:hour", readAt: now })];
+    const service = new NotificationsService(repo, { now: () => now });
+    await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour" });
+    expect(repo.rows[0].readAt).toBeNull();
+  });
+
+  it("keeps concurrent same-key aggregate creates to one current row", async () => {
+    const repo = new MemoryRepo(); const service = new NotificationsService(repo, { now: () => now });
+    await Promise.all([
+      service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour" }),
+      service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour" }),
+    ]);
+    expect(repo.rows.filter((row) => row.aggregationKey === "listing-1:hour")).toHaveLength(1);
   });
 
   it("does not publish a signal for idempotent read, delete, or read-all no-ops", async () => {

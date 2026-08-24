@@ -1,0 +1,51 @@
+import { NotificationCategory, NotificationType } from "@prisma/client";
+
+const mockPreferenceUpsert = jest.fn();
+const mockExecuteRaw = jest.fn();
+const mockNotificationFindFirst = jest.fn();
+const mockNotificationUpdate = jest.fn();
+const mockNotificationCreate = jest.fn();
+const mockTransaction = jest.fn();
+const mockPrisma = {
+  notificationPreference: { findMany: jest.fn(), upsert: jest.fn() },
+  notification: { findFirst: jest.fn(), update: jest.fn(), create: jest.fn() },
+  $transaction: mockTransaction,
+};
+
+jest.mock("../../config/prisma", () => ({ prisma: mockPrisma }));
+
+import { PrismaNotificationsRepository } from "./notifications.repository";
+
+const row = {
+  id: "aggregate", userId: "user-a", type: NotificationType.LISTING_FAVORITED_AGGREGATE, category: NotificationCategory.ENGAGEMENT,
+  title: "old", body: "old", actionUrl: "/listings/listing-1", entityType: "listing", entityId: "listing-1", metadata: { listingId: "listing-1" }, dedupeKey: null, aggregationKey: "listing-1:hour", readAt: new Date("2026-08-24T11:00:00.000Z"), deletedAt: null,
+  expiresAt: new Date("2026-11-22T12:00:00.000Z"), createdAt: new Date("2026-08-24T10:00:00.000Z"), updatedAt: new Date("2026-08-24T10:00:00.000Z"),
+};
+
+describe("PrismaNotificationsRepository persistence guarantees", () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    mockTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+      $executeRaw: mockExecuteRaw,
+      notificationPreference: { upsert: mockPreferenceUpsert },
+      notification: { findFirst: mockNotificationFindFirst, update: mockNotificationUpdate, create: mockNotificationCreate },
+    }));
+  });
+
+  it("uses one transaction for a preference batch and aborts when an upsert fails", async () => {
+    mockPreferenceUpsert.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("write failed"));
+    await expect(new PrismaNotificationsRepository().upsertPreferences("user-a", { MESSAGES: false, LISTINGS: true })).rejects.toThrow("write failed");
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockPreferenceUpsert).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.notificationPreference.findMany).not.toHaveBeenCalled();
+  });
+
+  it("serializes same-key aggregate persistence in a database transaction and reopens the row", async () => {
+    mockNotificationFindFirst.mockResolvedValue(row); mockNotificationUpdate.mockResolvedValue({ ...row, readAt: null, title: "new" });
+    const result = await new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: "new", body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: row.dedupeKey, aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt });
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ readAt: null, title: "new" }) }));
+    expect(result.readAt).toBeNull();
+  });
+});

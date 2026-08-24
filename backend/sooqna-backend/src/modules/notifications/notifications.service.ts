@@ -7,6 +7,7 @@ export type StoredNotification = {
   id: string; userId: string; type: NotificationType; category: NotificationCategory; title: string; body: string; actionUrl: string | null; entityType: string | null; entityId: string | null; metadata: NotificationMetadata; dedupeKey: string | null; aggregationKey: string | null; readAt: Date | null; deletedAt: Date | null; expiresAt: Date; createdAt: Date; updatedAt: Date;
 };
 export type OwnedNotificationMutation = { row: StoredNotification; changed: boolean };
+export type NewNotification = Omit<StoredNotification, "id" | "updatedAt">;
 export type NotificationsRepository = {
   listActive(userId: string, query: NotificationListQuery, now: Date): Promise<{ items: StoredNotification[]; hasMore: boolean; nextCursor: string | null }>;
   countUnread(userId: string, now: Date): Promise<number>;
@@ -18,7 +19,8 @@ export type NotificationsRepository = {
   upsertPreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>): Promise<Array<{ category: NotificationCategory; enabled: boolean }>>;
   findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null>;
   findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null>;
-  create(input: Omit<StoredNotification, "id" | "updatedAt">): Promise<StoredNotification>;
+  create(input: NewNotification): Promise<StoredNotification>;
+  persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<StoredNotification>;
   updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>): Promise<StoredNotification>;
 };
 type Options = { now?: () => Date; publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void };
@@ -41,17 +43,23 @@ export class NotificationsService {
     const rendered = renderNotification(type, payload); const preferences = await this.getPreferences(payload.recipientId);
     if (!preferences[rendered.category]) return null;
     const createdAt = this.now(); const expiresAt = new Date(createdAt.getTime() + 90 * 24 * 60 * 60 * 1000);
+    const input: NewNotification = { userId: payload.recipientId, type, ...rendered, dedupeKey: options.dedupeKey ?? null, aggregationKey: options.aggregationKey ?? null, readAt: null, deletedAt: null, expiresAt, createdAt };
     if (options.aggregationKey) {
-      const existing = await this.repo.findCurrentAggregate(options.aggregationKey);
-      if (existing) {
-        const updated = await this.repo.updateAggregate(existing.id, { title: rendered.title, body: rendered.body, actionUrl: rendered.actionUrl, metadata: rendered.metadata, expiresAt, updatedAt: createdAt });
-        await this.signal(updated.userId, updated.id); return toDto(updated);
-      }
+      const row = await this.repo.persistAggregate({ ...input, aggregationKey: options.aggregationKey });
+      await this.signal(row.userId, row.id); return toDto(row);
     }
-    const row = await this.repo.create({ userId: payload.recipientId, type, ...rendered, dedupeKey: options.dedupeKey ?? null, aggregationKey: options.aggregationKey ?? null, readAt: null, deletedAt: null, expiresAt, createdAt });
+    let row: StoredNotification;
+    try { row = await this.repo.create(input); }
+    catch (error) {
+      if (!options.dedupeKey || !isUniqueConflict(error)) throw error;
+      const existing = await this.repo.findByDedupeKey(options.dedupeKey);
+      if (!existing) throw error;
+      return toDto(existing);
+    }
     await this.signal(row.userId, row.id); return toDto(row);
   }
   private async signal(userId: string, notificationId: string): Promise<void> { await this.publishSignal(userId, notificationId, await this.unreadCount(userId)); }
 }
 function toDto(row: StoredNotification): NotificationDto { return { id: row.id, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, readAt: row.readAt?.toISOString() ?? null, createdAt: row.createdAt.toISOString() }; }
 function notFound(): AppError { return new AppError(404, "Notification not found.", "NOT_FOUND"); }
+function isUniqueConflict(error: unknown): boolean { return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "P2002"; }
