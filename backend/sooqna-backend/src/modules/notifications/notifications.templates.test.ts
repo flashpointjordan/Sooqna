@@ -1,5 +1,6 @@
 import { NotificationCategory, NotificationType } from "@prisma/client";
 import { AppError } from "../../shared/errors/appError";
+import { listingsQuerySchema } from "../../shared/validation/schemas";
 import {
   adminNotificationBroadcastBodySchema,
   notificationIdParamsSchema,
@@ -142,7 +143,7 @@ const expected = {
     category: NotificationCategory.SAVED_SEARCHES,
     entityType: "savedSearch",
     entityId: "search-1",
-    actionUrl: "/listings?search=cars&category=real-estate&city=damascus&maxPrice=500",
+    actionUrl: "/listings?search=cars&category=real-estate&city=damascus&priceMax=500",
   },
   SYSTEM_ANNOUNCEMENT: {
     category: NotificationCategory.SYSTEM,
@@ -237,19 +238,35 @@ describe("notification rendering contracts", () => {
     });
   });
 
-  it("maps saved-search q to the public listings search parameter while preserving safe filters", () => {
+  it("maps saved-search facts to accepted public listings filters with deterministic price aliases", () => {
     const rendered = renderNotification(NotificationType.SAVED_SEARCH_MATCHES, {
       ...payloads.SAVED_SEARCH_MATCHES,
-      query: { q: "  used cars  ", city: "damascus", minPrice: 100, condition: "used" },
+      query: {
+        q: "  used cars  ",
+        city: "damascus",
+        minPrice: 100,
+        priceMin: 200,
+        maxPrice: 300,
+        priceMax: 400,
+        condition: "used",
+      },
     });
     const action = new URL(rendered.actionUrl!, "https://sooqna.test");
+    const parsed = listingsQuerySchema.safeParse(Object.fromEntries(action.searchParams.entries()));
 
     expect(action.pathname).toBe("/listings");
     expect(action.searchParams.get("search")).toBe("used cars");
     expect(action.searchParams.get("q")).toBeNull();
     expect(action.searchParams.get("city")).toBe("damascus");
-    expect(action.searchParams.get("minPrice")).toBe("100");
-    expect(action.searchParams.get("condition")).toBe("used");
+    expect(action.searchParams.get("priceMin")).toBe("200");
+    expect(action.searchParams.get("priceMax")).toBe("400");
+    expect(action.searchParams.get("minPrice")).toBeNull();
+    expect(action.searchParams.get("maxPrice")).toBeNull();
+    expect(action.searchParams.get("condition")).toBeNull();
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toMatchObject({ search: "used cars", city: "damascus", priceMin: 200, priceMax: 400 });
+    }
   });
 
   it("uses fixed safe security copy and ignores arbitrary payload text", () => {
@@ -311,7 +328,23 @@ describe("notification cursors and request schemas", () => {
       id: "notification-1",
     });
 
-    for (const cursor of ["not-base64", "e30", "eyJjcmVhdGVkQXQiOiJub3QtYS1kYXRlIiwiaWQiOiJ4In0", "eyJjcmVhdGVkQXQiOiIyMDI2LTA4LTI0VDEwOjExOjEyLjAwMFoiLCJpZCI6IiJ9"]) {
+    const cursorWithExtraInput = {
+      createdAt: "2026-08-24T10:11:12.000Z",
+      id: "notification-1",
+      privateField: "must-not-be-serialized",
+    };
+    const encodedWithExtraInput = encodeNotificationCursor(cursorWithExtraInput);
+    expect(JSON.parse(Buffer.from(encodedWithExtraInput, "base64url").toString("utf8"))).toEqual({
+      createdAt: "2026-08-24T10:11:12.000Z",
+      id: "notification-1",
+    });
+
+    const extraPropertyCursor = Buffer.from(JSON.stringify({
+      createdAt: "2026-08-24T10:11:12.000Z",
+      id: "notification-1",
+      privateField: "must-be-rejected",
+    }), "utf8").toString("base64url");
+    for (const cursor of ["not-base64", "e30", "eyJjcmVhdGVkQXQiOiJub3QtYS1kYXRlIiwiaWQiOiJ4In0", "eyJjcmVhdGVkQXQiOiIyMDI2LTA4LTI0VDEwOjExOjEyLjAwMFoiLCJpZCI6IiJ9", extraPropertyCursor]) {
       expectValidationError(() => decodeNotificationCursor(cursor));
     }
   });
@@ -324,6 +357,9 @@ describe("notification cursors and request schemas", () => {
     });
     expect(notificationListQuerySchema.parse({})).toEqual({ limit: 20 });
     expect(notificationListQuerySchema.safeParse({ limit: "51" }).success).toBe(false);
+    expect(notificationListQuerySchema.safeParse({ limit: true }).success).toBe(false);
+    expect(notificationListQuerySchema.safeParse({ limit: [25] }).success).toBe(false);
+    expect(notificationListQuerySchema.safeParse({ limit: { value: 25 } }).success).toBe(false);
     expect(notificationListQuerySchema.safeParse({ unread: "1" }).success).toBe(false);
     expect(notificationListQuerySchema.safeParse({ unexpected: "field" }).success).toBe(false);
     expect(notificationIdParamsSchema.safeParse({ id: "x".repeat(129) }).success).toBe(false);
@@ -360,6 +396,25 @@ describe("notification cursors and request schemas", () => {
       audience: "ALL",
       audienceValue: null,
       actionUrl: "https://evil.example",
+    }).success).toBe(false);
+  });
+
+  it("measures broadcast title and body limits in Unicode code points", () => {
+    const base = { audience: "ALL" as const, audienceValue: null };
+    expect(adminNotificationBroadcastBodySchema.safeParse({
+      ...base,
+      title: "😀".repeat(100),
+      body: "😀".repeat(240),
+    }).success).toBe(true);
+    expect(adminNotificationBroadcastBodySchema.safeParse({
+      ...base,
+      title: "😀".repeat(101),
+      body: "تنبيه",
+    }).success).toBe(false);
+    expect(adminNotificationBroadcastBodySchema.safeParse({
+      ...base,
+      title: "تنبيه",
+      body: "😀".repeat(241),
     }).success).toBe(false);
   });
 });

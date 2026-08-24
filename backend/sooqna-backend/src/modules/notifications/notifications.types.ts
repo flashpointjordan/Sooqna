@@ -141,7 +141,7 @@ export function encodeNotificationCursor(cursor: NotificationCursor): string {
   if (!isCanonicalIsoTimestamp(cursor.createdAt) || !isBoundedId(cursor.id)) {
     return cursorValidationError();
   }
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+  return Buffer.from(JSON.stringify({ createdAt: cursor.createdAt, id: cursor.id }), "utf8").toString("base64url");
 }
 
 export function decodeNotificationCursor(value: string): NotificationCursor {
@@ -154,7 +154,10 @@ export function decodeNotificationCursor(value: string): NotificationCursor {
     if (decoded.toString("base64url") !== value) return cursorValidationError();
     const parsed: unknown = JSON.parse(decoded.toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return cursorValidationError();
-    const { createdAt, id } = parsed as Record<string, unknown>;
+    const parsedObject = parsed as Record<string, unknown>;
+    const keys = Object.keys(parsedObject);
+    if (keys.length !== 2 || !keys.includes("createdAt") || !keys.includes("id")) return cursorValidationError();
+    const { createdAt, id } = parsedObject;
     if (!isCanonicalIsoTimestamp(createdAt) || !isBoundedId(id)) return cursorValidationError();
     return { createdAt, id };
   } catch {
