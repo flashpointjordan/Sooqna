@@ -13,16 +13,20 @@ function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput 
 }
 
 export class PrismaNotificationsRepository implements NotificationsRepository, NotificationOutboxRepository {
-  async recoverStaleProcessing(now: Date, staleBefore: Date): Promise<number> {
-    const dead = await prisma.notificationOutbox.updateMany({
-      where: { state: NotificationOutboxState.PROCESSING, attempts: { gte: 8 }, updatedAt: { lt: staleBefore } },
-      data: { state: NotificationOutboxState.DEAD },
-    });
+  async recoverStaleProcessing(now: Date, staleBefore: Date): Promise<{ recovered: number; dead: Array<{ id: string; attempts: number }> }> {
+    const dead = await prisma.$queryRaw<Array<{ id: string; attempts: number }>>(Prisma.sql`
+      UPDATE "NotificationOutbox"
+      SET "state" = 'DEAD'::"NotificationOutboxState"
+      WHERE "state" = 'PROCESSING'::"NotificationOutboxState"
+        AND "attempts" >= 8
+        AND "updatedAt" < ${staleBefore}
+      RETURNING "id", "attempts"
+    `);
     const result = await prisma.notificationOutbox.updateMany({
       where: { state: NotificationOutboxState.PROCESSING, attempts: { lt: 8 }, updatedAt: { lt: staleBefore } },
       data: { state: NotificationOutboxState.FAILED, availableAt: now },
     });
-    return dead.count + result.count;
+    return { recovered: dead.length + result.count, dead };
   }
   async claimReady(limit: number, now: Date): Promise<NotificationOutboxRecord[]> {
     const bounded = Math.max(1, Math.min(limit, 200));

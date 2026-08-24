@@ -10,7 +10,7 @@ export type NotificationOutboxRecord = {
 };
 
 export type NotificationOutboxRepository = {
-  recoverStaleProcessing(now: Date, staleBefore: Date): Promise<number>;
+  recoverStaleProcessing(now: Date, staleBefore: Date): Promise<{ recovered: number; dead: Array<{ id: string; attempts: number }> }>;
   claimReady(limit: number, now: Date): Promise<NotificationOutboxRecord[]>;
   markProcessed(id: string, now: Date): Promise<void>;
   markFailure(id: string, error: string, availableAt: Date, now: Date): Promise<NotificationOutboxState>;
@@ -54,7 +54,7 @@ export function createNotificationWorker(deps: WorkerDeps) {
     if (!deps.service.persistFromEvent) throw new Error("Notification worker persistence service is not configured.");
     const result = await deps.service.persistFromEvent(row.eventType, payload, {
       dedupeKey: row.dedupeKey,
-      ...(isAggregateEvent(row.eventType) ? { aggregationKey: aggregateKey(row, now()) } : {}),
+      ...(isAggregateEvent(row.eventType) ? { aggregationKey: aggregateKey(row) } : {}),
     });
     // A non-aggregate row can be retried after persistence succeeded but its
     // signal failed. Re-publishing that id is safe and prevents losing SSE.
@@ -66,7 +66,8 @@ export function createNotificationWorker(deps: WorkerDeps) {
 
   async function execute(): Promise<void> {
     const recoveredAt = now();
-    await deps.repository.recoverStaleProcessing(recoveredAt, new Date(recoveredAt.getTime() - STALE_PROCESSING_MS));
+    const recovery = await deps.repository.recoverStaleProcessing(recoveredAt, new Date(recoveredAt.getTime() - STALE_PROCESSING_MS));
+    for (const dead of recovery.dead) deps.logger?.error("Notification outbox event is dead.", { outboxId: dead.id, attempts: dead.attempts, reason: "stale_processing" });
     if (stopping) return;
     const rows = await deps.repository.claimReady(batchSize, now());
     for (const row of rows) {
@@ -107,10 +108,11 @@ export function createNotificationWorker(deps: WorkerDeps) {
 }
 
 function isAggregateEvent(type: NotificationType): boolean { return type === NotificationType.LISTING_FAVORITED_AGGREGATE || type === NotificationType.SAVED_SEARCH_MATCHES; }
-function aggregateKey(row: NotificationOutboxRecord, at: Date): string {
+function aggregateKey(row: NotificationOutboxRecord): string {
   const raw = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload) ? (row.payload as Record<string, unknown>)._aggregationKey : undefined;
   if (raw !== undefined && (typeof raw !== "string" || raw.length === 0 || raw.length > 160 || !/^[A-Za-z0-9:_-]+$/.test(raw))) throw new AppError(400, "Invalid notification aggregation key.", "VALIDATION_ERROR");
-  return `${raw ?? `${row.eventType}:${row.recipientId}:${row.aggregateId}`}:${at.toISOString().slice(0, 13)}`;
+  if (typeof raw === "string" && /:\d{4}-\d{2}-\d{2}T\d{2}$/.test(raw)) return raw;
+  return `${raw ?? `${row.eventType}:${row.recipientId}:${row.aggregateId}`}:${row.createdAt.toISOString().slice(0, 13)}`;
 }
 function errorMessage(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 500); }
 
