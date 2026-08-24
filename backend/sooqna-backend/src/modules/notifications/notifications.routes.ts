@@ -1,14 +1,12 @@
 import { Router } from "express";
-import { z } from "zod";
 import { requireActiveUser, requireCurrentUser } from "../../middleware/authContext";
 import { asyncHandler } from "../../middleware/asyncHandler";
 import { requireVerifiedEmail } from "../../middleware/requireVerifiedEmail";
 import { validateRequest } from "../../middleware/validateRequest";
 import { verifyFirebaseToken } from "../../middleware/verifyFirebaseToken";
-import { notificationListQuerySchema, notificationPreferencesUpdateBodySchema } from "./notifications.schemas";
+import { notificationListQuerySchema, notificationPathParamsSchema, notificationPreferencesUpdateBodySchema } from "./notifications.schemas";
 import { deleteNotification, getNotificationPreferences, getUnreadCount, listNotifications, markAllNotificationsRead, markNotificationRead, updateNotificationPreferences } from "./notifications.controller";
 
-const notificationPathParamsSchema = z.object({ notificationId: z.string().trim().min(1).max(128) }).strict();
 export const notificationsRouter = Router();
 notificationsRouter.use(verifyFirebaseToken, requireCurrentUser, requireActiveUser, requireVerifiedEmail);
 notificationsRouter.get("/", validateRequest({ query: notificationListQuerySchema }), asyncHandler(listNotifications));

@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { AppError } from "../../shared/errors/appError";
 import { sendSuccess } from "../../shared/contracts/api";
 import { PrismaNotificationsRepository } from "./notifications.repository";
+import { notificationListQuerySchema } from "./notifications.schemas";
 import { NotificationsService } from "./notifications.service";
 
 const service = new NotificationsService(new PrismaNotificationsRepository());
@@ -13,7 +14,7 @@ function userId(req: Request): string {
 }
 function notificationId(req: Request): string { return req.params.notificationId; }
 
-export async function listNotifications(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.list(userId(req), req.query as never)); }
+export async function listNotifications(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.list(userId(req), notificationListQuerySchema.parse(req.query))); }
 export async function getUnreadCount(req: Request, res: Response): Promise<void> { sendSuccess(res, { unreadCount: await service.unreadCount(userId(req)) }); }
 export async function markNotificationRead(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.markRead(userId(req), notificationId(req))); }
 export async function markAllNotificationsRead(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.markAllRead(userId(req))); }

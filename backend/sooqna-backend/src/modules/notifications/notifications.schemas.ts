@@ -35,6 +35,7 @@ export const notificationListQuerySchema = z
   .strict();
 
 export const notificationIdParamsSchema = z.object({ id: notificationIdSchema }).strict();
+export const notificationPathParamsSchema = z.object({ notificationId: notificationIdSchema }).strict();
 
 export const notificationPreferencesUpdateBodySchema = z
   .object({
