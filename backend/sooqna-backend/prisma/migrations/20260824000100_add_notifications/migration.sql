@@ -51,7 +51,7 @@ CREATE TABLE "NotificationPreference" (
 -- CreateTable
 CREATE TABLE "NotificationOutbox" (
     "id" TEXT NOT NULL,
-    "eventType" TEXT NOT NULL,
+    "eventType" "NotificationType" NOT NULL,
     "aggregateType" TEXT NOT NULL,
     "aggregateId" TEXT NOT NULL,
     "recipientId" TEXT,
