@@ -1,0 +1,139 @@
+import { NotificationOutboxState, NotificationType } from "@prisma/client";
+import { AppError } from "../../shared/errors/appError";
+import type { NotificationEventPayload } from "./notifications.types";
+
+export type NotificationOutboxRecord = {
+  id: string; eventType: NotificationType; aggregateType: string; aggregateId: string; recipientId: string | null;
+  payload: unknown; dedupeKey: string; state: NotificationOutboxState; attempts: number; availableAt: Date;
+  processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
+};
+
+export type NotificationOutboxRepository = {
+  recoverStaleProcessing(now: Date, staleBefore: Date): Promise<number>;
+  claimReady(limit: number, now: Date): Promise<NotificationOutboxRecord[]>;
+  markProcessed(id: string, now: Date): Promise<void>;
+  markFailure(id: string, error: string, availableAt: Date, now: Date): Promise<NotificationOutboxState>;
+};
+
+export type NotificationWorkerService = {
+  persistFromEvent?: (type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey: string; aggregationKey?: string }) => Promise<{ row: { id: string; userId: string } | null; changed: boolean }>;
+  unreadCount?: (userId: string) => Promise<number>;
+  signalPersisted?: (userId: string, notificationId: string, unreadCount?: number) => Promise<void>;
+};
+
+type WorkerDeps = {
+  repository: NotificationOutboxRepository;
+  service: NotificationWorkerService;
+  batchSize?: number;
+  intervalMs?: number;
+  now?: () => Date;
+  jitter?: () => number;
+  logger?: { error(message: string, meta?: Record<string, unknown>): void; warn?(message: string, meta?: Record<string, unknown>): void };
+  publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void>;
+  processEvent?: (row: NotificationOutboxRecord) => Promise<void>;
+};
+
+const STALE_PROCESSING_MS = 5 * 60_000;
+
+export function createNotificationWorker(deps: WorkerDeps) {
+  const batchSize = Math.max(1, Math.min(deps.batchSize ?? 50, 200));
+  const intervalMs = Math.max(100, deps.intervalMs ?? 1_000);
+  const now = deps.now ?? (() => new Date());
+  const jitter = deps.jitter ?? (() => Math.floor(Math.random() * 250));
+  let timer: NodeJS.Timeout | undefined;
+  let stopping = false;
+  let active: Promise<void> | undefined;
+
+  async function process(row: NotificationOutboxRecord): Promise<void> {
+    if (deps.processEvent) return deps.processEvent(row);
+    const payload = parsePayload(row.payload);
+    if (!row.recipientId || payload.recipientId !== row.recipientId) {
+      throw new AppError(400, "Notification outbox fanout payload is not supported.", "NOTIFICATION_FANOUT_UNSUPPORTED");
+    }
+    if (!deps.service.persistFromEvent) throw new Error("Notification worker persistence service is not configured.");
+    const result = await deps.service.persistFromEvent(row.eventType, payload, {
+      dedupeKey: row.dedupeKey,
+      ...(isAggregateEvent(row.eventType) ? { aggregationKey: `${row.eventType}:${row.recipientId}:${row.aggregateType}:${row.aggregateId}` } : {}),
+    });
+    // A non-aggregate row can be retried after persistence succeeded but its
+    // signal failed. Re-publishing that id is safe and prevents losing SSE.
+    if (!result.row || (isAggregateEvent(row.eventType) && !result.changed)) return;
+    const unreadCount = deps.service.unreadCount ? await deps.service.unreadCount(result.row.userId) : 0;
+    if (deps.publishSignal) await deps.publishSignal(result.row.userId, result.row.id, unreadCount);
+    else if (deps.service.signalPersisted) await deps.service.signalPersisted(result.row.userId, result.row.id, unreadCount);
+  }
+
+  async function execute(): Promise<void> {
+    const recoveredAt = now();
+    await deps.repository.recoverStaleProcessing(recoveredAt, new Date(recoveredAt.getTime() - STALE_PROCESSING_MS));
+    if (stopping) return;
+    const rows = await deps.repository.claimReady(batchSize, now());
+    for (const row of rows) {
+      if (stopping) return;
+      try {
+        await process(row);
+        await deps.repository.markProcessed(row.id, now());
+      } catch (error) {
+        const message = errorMessage(error);
+        const failedAt = now();
+        const delay = Math.min(30_000, 1_000 * 2 ** (row.attempts - 1)) + Math.max(0, jitter());
+        const state = await deps.repository.markFailure(row.id, message, new Date(failedAt.getTime() + delay), failedAt);
+        if (state === NotificationOutboxState.DEAD) deps.logger?.error("Notification outbox event is dead.", { outboxId: row.id, attempts: row.attempts, error: message });
+      }
+    }
+  }
+
+  return {
+    async runOnce(): Promise<void> {
+      if (stopping) return;
+      if (active) return active;
+      active = execute();
+      try { await active; } finally { active = undefined; }
+    },
+    start(): void {
+      if (timer) return;
+      stopping = false;
+      void this.runOnce();
+      timer = setInterval(() => { void this.runOnce(); }, intervalMs);
+      timer.unref();
+    },
+    async stop(): Promise<void> {
+      stopping = true;
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      await active;
+    },
+  };
+}
+
+function isAggregateEvent(type: NotificationType): boolean { return type === NotificationType.LISTING_FAVORITED_AGGREGATE; }
+function errorMessage(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 500); }
+
+function parsePayload(value: unknown): NotificationEventPayload {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  const payload = value as Record<string, unknown>;
+  if (typeof payload.eventType !== "string" || typeof payload.recipientId !== "string" || !payload.recipientId) throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  if (!Object.values(NotificationType).includes(payload.eventType as NotificationType)) throw new AppError(400, "Invalid notification event type.", "VALIDATION_ERROR");
+  const stringFields: Record<NotificationType, readonly string[]> = {
+    MESSAGE_RECEIVED: ["conversationId", "messageId", "senderId", "senderName", "listingId", "messagePreview"],
+    LISTING_APPROVED: ["listingId", "listingTitle"], LISTING_REJECTED: ["listingId", "listingTitle", "rejectionReason"],
+    LISTING_EXPIRING: ["listingId", "listingTitle", "expiresAt"], LISTING_EXPIRED: ["listingId", "listingTitle"],
+    LISTING_FAVORITED_AGGREGATE: ["listingId", "listingTitle"], REVIEW_RECEIVED: ["reviewId", "reviewerId", "reviewerName", "listingId", "listingTitle"],
+    SAVED_SEARCH_MATCHES: ["savedSearchId", "savedSearchName"], SYSTEM_ANNOUNCEMENT: ["announcementId", "title", "body"], SECURITY_ALERT: ["alertId"],
+  };
+  if (stringFields[payload.eventType as NotificationType].some((field) => typeof payload[field] !== "string")) throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  if (payload.eventType === NotificationType.LISTING_FAVORITED_AGGREGATE && typeof payload.favoriteCount !== "number") throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  if (payload.eventType === NotificationType.REVIEW_RECEIVED && typeof payload.rating !== "number") throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  if (payload.eventType === NotificationType.SAVED_SEARCH_MATCHES && (!Array.isArray(payload.matchingListingIds) || typeof payload.totalCount !== "number" || !payload.query || typeof payload.query !== "object" || Array.isArray(payload.query))) throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  if (payload.eventType === NotificationType.SYSTEM_ANNOUNCEMENT && payload.actionUrl !== undefined && payload.actionUrl !== null && typeof payload.actionUrl !== "string") throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
+  return payload as unknown as NotificationEventPayload;
+}
+
+if (require.main === module) {
+  void (async () => {
+    const [{ PrismaNotificationsRepository }, { NotificationsService }, { logger }] = await Promise.all([
+      import("./notifications.repository"), import("./notifications.service"), import("../../config/logger"),
+    ]);
+    await createNotificationWorker({ repository: new PrismaNotificationsRepository(), service: new NotificationsService(new PrismaNotificationsRepository()), logger }).runOnce();
+  })();
+}

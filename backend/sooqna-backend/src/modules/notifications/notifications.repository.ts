@@ -3,6 +3,7 @@ import { AppError } from "../../shared/errors/appError";
 import { prisma } from "../../config/prisma";
 import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
 import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
+import type { NotificationOutboxRecord, NotificationOutboxRepository } from "./notifications.worker";
 
 function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput | undefined {
   if (!cursor) return undefined;
@@ -11,7 +12,42 @@ function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput 
   return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: value.id } }] };
 }
 
-export class PrismaNotificationsRepository implements NotificationsRepository {
+export class PrismaNotificationsRepository implements NotificationsRepository, NotificationOutboxRepository {
+  async recoverStaleProcessing(now: Date, staleBefore: Date): Promise<number> {
+    const result = await prisma.notificationOutbox.updateMany({
+      where: { state: NotificationOutboxState.PROCESSING, updatedAt: { lt: staleBefore } },
+      data: { state: NotificationOutboxState.FAILED, availableAt: now },
+    });
+    return result.count;
+  }
+  async claimReady(limit: number, now: Date): Promise<NotificationOutboxRecord[]> {
+    const bounded = Math.max(1, Math.min(limit, 200));
+    return prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{
+        id: string; eventType: NotificationOutboxRecord["eventType"]; aggregateType: string; aggregateId: string; recipientId: string | null; payload: unknown; dedupeKey: string; state: NotificationOutboxState; attempts: number; availableAt: Date; processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
+      }>>(Prisma.sql`
+        SELECT "id", "eventType", "aggregateType", "aggregateId", "recipientId", "payload", "dedupeKey", "state", "attempts", "availableAt", "processedAt", "lastError", "createdAt", "updatedAt"
+        FROM "NotificationOutbox"
+        WHERE "state" IN ('PENDING'::"NotificationOutboxState", 'FAILED'::"NotificationOutboxState")
+          AND "availableAt" <= ${now}
+        ORDER BY "availableAt" ASC, "createdAt" ASC, "id" ASC
+        LIMIT ${bounded}
+        FOR UPDATE SKIP LOCKED
+      `);
+      if (rows.length === 0) return [];
+      await tx.notificationOutbox.updateMany({ where: { id: { in: rows.map((row) => row.id) }, state: { in: [NotificationOutboxState.PENDING, NotificationOutboxState.FAILED] } }, data: { state: NotificationOutboxState.PROCESSING, attempts: { increment: 1 } } });
+      return rows.map((row) => ({ ...row, state: NotificationOutboxState.PROCESSING, attempts: row.attempts + 1 }));
+    });
+  }
+  async markProcessed(id: string, now: Date): Promise<void> {
+    await prisma.notificationOutbox.updateMany({ where: { id, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.PROCESSED, processedAt: now, lastError: null } });
+  }
+  async markFailure(id: string, error: string, availableAt: Date, _now: Date): Promise<NotificationOutboxState> {
+    const dead = await prisma.notificationOutbox.updateMany({ where: { id, state: NotificationOutboxState.PROCESSING, attempts: { gte: 8 } }, data: { state: NotificationOutboxState.DEAD, lastError: error.slice(0, 500), availableAt, processedAt: null } });
+    if (dead.count > 0) return NotificationOutboxState.DEAD;
+    const failed = await prisma.notificationOutbox.updateMany({ where: { id, state: NotificationOutboxState.PROCESSING }, data: { state: NotificationOutboxState.FAILED, lastError: error.slice(0, 500), availableAt, processedAt: null } });
+    return failed.count > 0 ? NotificationOutboxState.FAILED : NotificationOutboxState.PROCESSING;
+  }
   async listActive(userId: string, query: NotificationListQuery, now: Date) {
     const where: Prisma.NotificationWhereInput = {
       userId, deletedAt: null, expiresAt: { gt: now }, ...cursorWhere(query.cursor),
