@@ -1,7 +1,7 @@
 import { Prisma, type NotificationCategory } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
-import type { NotificationsRepository, StoredNotification } from "./notifications.service";
+import type { NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
 
 function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput | undefined {
   if (!cursor) return undefined;
@@ -26,16 +26,16 @@ export class PrismaNotificationsRepository implements NotificationsRepository {
 
   async countUnread(userId: string, now: Date): Promise<number> { return prisma.notification.count({ where: { userId, readAt: null, deletedAt: null, expiresAt: { gt: now } } }); }
   async findActiveOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null> { const row = await prisma.notification.findFirst({ where: { id, userId, deletedAt: null, expiresAt: { gt: now } } }); return row && toStored(row); }
-  async markReadOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null> {
-    const existing = await this.findActiveOwned(userId, id, now);
-    if (!existing || existing.readAt) return existing;
-    return toStored(await prisma.notification.update({ where: { id }, data: { readAt: now } }));
+  async markReadOwned(userId: string, id: string, now: Date): Promise<OwnedNotificationMutation | null> {
+    const changed = await prisma.notification.updateMany({ where: { id, userId, deletedAt: null, expiresAt: { gt: now }, readAt: null }, data: { readAt: now } });
+    const row = await this.findActiveOwned(userId, id, now);
+    return row ? { row, changed: changed.count > 0 } : null;
   }
   async markAllRead(userId: string, now: Date): Promise<number> { const result = await prisma.notification.updateMany({ where: { userId, readAt: null, deletedAt: null, expiresAt: { gt: now } }, data: { readAt: now } }); return result.count; }
-  async softDeleteOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null> {
-    const existing = await prisma.notification.findFirst({ where: { id, userId, expiresAt: { gt: now } } });
-    if (!existing || existing.deletedAt) return existing && toStored(existing);
-    return toStored(await prisma.notification.update({ where: { id }, data: { deletedAt: now } }));
+  async softDeleteOwned(userId: string, id: string, now: Date): Promise<OwnedNotificationMutation | null> {
+    const changed = await prisma.notification.updateMany({ where: { id, userId, deletedAt: null, expiresAt: { gt: now } }, data: { deletedAt: now } });
+    const row = await prisma.notification.findFirst({ where: { id, userId, expiresAt: { gt: now } } });
+    return row ? { row: toStored(row), changed: changed.count > 0 } : null;
   }
   async getPreferences(userId: string) { return prisma.notificationPreference.findMany({ where: { userId }, select: { category: true, enabled: true } }); }
   async upsertPreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>) {

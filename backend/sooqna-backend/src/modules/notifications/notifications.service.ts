@@ -6,13 +6,14 @@ import type { NotificationDto, NotificationEventPayload, NotificationListQuery, 
 export type StoredNotification = {
   id: string; userId: string; type: NotificationType; category: NotificationCategory; title: string; body: string; actionUrl: string | null; entityType: string | null; entityId: string | null; metadata: NotificationMetadata; dedupeKey: string | null; aggregationKey: string | null; readAt: Date | null; deletedAt: Date | null; expiresAt: Date; createdAt: Date; updatedAt: Date;
 };
+export type OwnedNotificationMutation = { row: StoredNotification; changed: boolean };
 export type NotificationsRepository = {
   listActive(userId: string, query: NotificationListQuery, now: Date): Promise<{ items: StoredNotification[]; hasMore: boolean; nextCursor: string | null }>;
   countUnread(userId: string, now: Date): Promise<number>;
   findActiveOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null>;
-  markReadOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null>;
+  markReadOwned(userId: string, id: string, now: Date): Promise<OwnedNotificationMutation | null>;
   markAllRead(userId: string, now: Date): Promise<number>;
-  softDeleteOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null>;
+  softDeleteOwned(userId: string, id: string, now: Date): Promise<OwnedNotificationMutation | null>;
   getPreferences(userId: string): Promise<Array<{ category: NotificationCategory; enabled: boolean }>>;
   upsertPreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>): Promise<Array<{ category: NotificationCategory; enabled: boolean }>>;
   findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null>;
@@ -30,9 +31,9 @@ export class NotificationsService {
   constructor(private readonly repo: NotificationsRepository, options: Options = {}) { this.now = options.now ?? (() => new Date()); this.publishSignal = options.publishSignal ?? (() => undefined); }
   async list(userId: string, query: NotificationListQuery): Promise<{ items: NotificationDto[]; hasMore: boolean; nextCursor: string | null }> { const result = await this.repo.listActive(userId, { ...query, limit: Math.min(query.limit, 50) }, this.now()); return { ...result, items: result.items.map(toDto) }; }
   async unreadCount(userId: string): Promise<number> { return this.repo.countUnread(userId, this.now()); }
-  async markRead(userId: string, id: string): Promise<NotificationDto> { const row = await this.repo.markReadOwned(userId, id, this.now()); if (!row) throw notFound(); await this.signal(userId, row.id); return toDto(row); }
-  async markAllRead(userId: string): Promise<{ updatedCount: number; unreadCount: number }> { const updatedCount = await this.repo.markAllRead(userId, this.now()); const unreadCount = await this.unreadCount(userId); await this.publishSignal(userId, "", unreadCount); return { updatedCount, unreadCount }; }
-  async delete(userId: string, id: string): Promise<NotificationDto> { const row = await this.repo.softDeleteOwned(userId, id, this.now()); if (!row) throw notFound(); await this.signal(userId, row.id); return toDto(row); }
+  async markRead(userId: string, id: string): Promise<NotificationDto> { const result = await this.repo.markReadOwned(userId, id, this.now()); if (!result) throw notFound(); if (result.changed) await this.signal(userId, result.row.id); return toDto(result.row); }
+  async markAllRead(userId: string): Promise<{ updatedCount: number; unreadCount: number }> { const updatedCount = await this.repo.markAllRead(userId, this.now()); const unreadCount = await this.unreadCount(userId); if (updatedCount > 0) await this.publishSignal(userId, "", unreadCount); return { updatedCount, unreadCount }; }
+  async delete(userId: string, id: string): Promise<NotificationDto> { const result = await this.repo.softDeleteOwned(userId, id, this.now()); if (!result) throw notFound(); if (result.changed) await this.signal(userId, result.row.id); return toDto(result.row); }
   async getPreferences(userId: string): Promise<Record<NotificationCategory, boolean>> { const stored = new Map((await this.repo.getPreferences(userId)).map((item) => [item.category, item.enabled])); return Object.fromEntries([...optional.map((category) => [category, stored.get(category) ?? true]), ...locked.map((category) => [category, true])]) as Record<NotificationCategory, boolean>; }
   async updatePreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>) { const permissible = Object.fromEntries(optional.filter((category) => values[category] !== undefined).map((category) => [category, values[category]!])) as Partial<Record<NotificationCategory, boolean>>; await this.repo.upsertPreferences(userId, permissible); return this.getPreferences(userId); }
   async createFromEvent(type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey?: string; aggregationKey?: string } = {}): Promise<NotificationDto | null> {

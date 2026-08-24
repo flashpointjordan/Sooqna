@@ -1,9 +1,46 @@
+import express from "express";
+import request from "supertest";
+import { AppError } from "../../shared/errors/appError";
+import { errorHandler } from "../../middleware/errorHandler";
+
+jest.mock("../../middleware/verifyFirebaseToken", () => ({
+  verifyFirebaseToken(req: { get(name: string): string | undefined; authUser?: unknown }, res: express.Response, next: express.NextFunction) {
+    if (req.get("authorization") !== "Bearer test-token") { res.status(401).json({ success: false, code: "UNAUTHORIZED" }); return; }
+    req.authUser = { uid: req.get("x-user-id") ?? "user-a", email_verified: req.get("x-verified") !== "false" };
+    next();
+  },
+}));
+jest.mock("../../middleware/authContext", () => ({
+  requireCurrentUser(req: { authUser?: { uid?: string; email_verified?: boolean }; currentUser?: unknown }, _res: express.Response, next: express.NextFunction) {
+    req.currentUser = { firebaseUid: req.authUser?.uid, emailVerified: req.authUser?.email_verified, accountStatus: "active" };
+    next();
+  },
+  requireActiveUser(_req: express.Request, _res: express.Response, next: express.NextFunction) { next(); },
+}));
+jest.mock("../../middleware/requireVerifiedEmail", () => ({
+  requireVerifiedEmail(req: { authUser?: { email_verified?: boolean } }, res: express.Response, next: express.NextFunction) {
+    if (!req.authUser?.email_verified) { res.status(403).json({ success: false, code: "EMAIL_NOT_VERIFIED" }); return; }
+    next();
+  },
+}));
+
 import { notificationListQuerySchema, notificationPreferencesUpdateBodySchema } from "./notifications.schemas";
 import { listNotifications } from "./notifications.controller";
 import { notificationsRouter } from "./notifications.routes";
 import { NotificationsService } from "./notifications.service";
 
+function testApp(): express.Express {
+  const app = express();
+  app.use(express.json());
+  app.use("/api/notifications", notificationsRouter);
+  app.use(errorHandler);
+  return app;
+}
+const auth = { Authorization: "Bearer test-token" };
+
 describe("notification REST route contract", () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it("accepts bounded notification list and optional-only preference inputs", () => {
     expect(notificationListQuerySchema.parse({ limit: "50", category: "MESSAGES", unread: "true" })).toMatchObject({ limit: 50, category: "MESSAGES", unread: true });
     expect(notificationListQuerySchema.safeParse({ userId: "someone-else" }).success).toBe(false);
@@ -24,6 +61,37 @@ describe("notification REST route contract", () => {
     await listNotifications({ currentUser: { firebaseUid: "user-a" }, query: { limit: 20 } } as never, { status } as never);
     expect(list).toHaveBeenCalledWith("user-a", { limit: 20 });
     expect(status).toHaveBeenCalledWith(200); expect(json).toHaveBeenCalledWith({ success: true, data: { items: [], hasMore: false, nextCursor: null } });
-    list.mockRestore();
+  });
+
+  it("rejects unauthenticated and unverified requests before reaching controllers", async () => {
+    await request(testApp()).get("/api/notifications").expect(401).expect({ success: false, code: "UNAUTHORIZED" });
+    await request(testApp()).get("/api/notifications").set({ ...auth, "x-verified": "false" }).expect(403).expect({ success: false, code: "EMAIL_NOT_VERIFIED" });
+  });
+
+  it("returns validation errors for invalid list, ID, and preference input", async () => {
+    await request(testApp()).get("/api/notifications?limit=51").set(auth).expect(400);
+    await request(testApp()).get("/api/notifications?userId=someone-else").set(auth).expect(400);
+    await request(testApp()).patch(`/api/notifications/${"x".repeat(129)}/read`).set(auth).expect(400);
+    await request(testApp()).put("/api/notifications/preferences").set(auth).send({ SYSTEM: false }).expect(400);
+  });
+
+  it("does not leak cross-user read or delete through HTTP", async () => {
+    jest.spyOn(NotificationsService.prototype, "markRead").mockRejectedValue(new AppError(404, "Notification not found.", "NOT_FOUND"));
+    jest.spyOn(NotificationsService.prototype, "delete").mockRejectedValue(new AppError(404, "Notification not found.", "NOT_FOUND"));
+    await request(testApp()).patch("/api/notifications/other/read").set(auth).expect(404).expect("Content-Type", /json/);
+    await request(testApp()).delete("/api/notifications/other").set(auth).expect(404).expect("Content-Type", /json/);
+  });
+
+  it("serves list, count, read-all, and preferences using standard data envelopes", async () => {
+    jest.spyOn(NotificationsService.prototype, "list").mockResolvedValue({ items: [], hasMore: false, nextCursor: null });
+    jest.spyOn(NotificationsService.prototype, "unreadCount").mockResolvedValue(3);
+    jest.spyOn(NotificationsService.prototype, "markAllRead").mockResolvedValue({ updatedCount: 2, unreadCount: 1 });
+    jest.spyOn(NotificationsService.prototype, "getPreferences").mockResolvedValue({ MESSAGES: true, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true });
+    jest.spyOn(NotificationsService.prototype, "updatePreferences").mockResolvedValue({ MESSAGES: false, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true });
+    await request(testApp()).get("/api/notifications").set(auth).expect(200, { success: true, data: { items: [], hasMore: false, nextCursor: null } });
+    await request(testApp()).get("/api/notifications/unread-count").set(auth).expect(200, { success: true, data: { unreadCount: 3 } });
+    await request(testApp()).post("/api/notifications/read-all").set(auth).expect(200, { success: true, data: { updatedCount: 2, unreadCount: 1 } });
+    await request(testApp()).get("/api/notifications/preferences").set(auth).expect(200).expect((response) => expect(response.body.data.SYSTEM).toBe(true));
+    await request(testApp()).put("/api/notifications/preferences").set(auth).send({ MESSAGES: false }).expect(200).expect((response) => expect(response.body.data.MESSAGES).toBe(false));
   });
 });
