@@ -1,4 +1,5 @@
 import { NotificationCategory, NotificationType } from "@prisma/client";
+import { decodeNotificationCursor, encodeNotificationCursor } from "./notifications.types";
 import { NotificationsService, type NotificationsRepository, type StoredNotification } from "./notifications.service";
 
 const now = new Date("2026-08-24T12:00:00.000Z");
@@ -16,15 +17,15 @@ class MemoryRepo implements NotificationsRepository {
   async listActive(userId: string, query: { limit: number; cursor?: string; category?: NotificationCategory; unread?: boolean }, at: Date) {
     let rows = this.rows.filter((row) => row.userId === userId && !row.deletedAt && row.expiresAt > at && (!query.category || row.category === query.category) && (query.unread === undefined || (query.unread ? !row.readAt : !!row.readAt)));
     rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
-    if (query.cursor) { const [time, id] = query.cursor.split("|"); rows = rows.filter((row) => row.createdAt < new Date(time) || (row.createdAt.getTime() === new Date(time).getTime() && row.id < id)); }
+    if (query.cursor) { const { createdAt, id } = decodeNotificationCursor(query.cursor); rows = rows.filter((row) => row.createdAt < new Date(createdAt) || (row.createdAt.getTime() === new Date(createdAt).getTime() && row.id < id)); }
     const page = rows.slice(0, Math.min(query.limit, 50));
-    return { items: page, hasMore: rows.length > page.length, nextCursor: page.length && rows.length > page.length ? `${page.at(-1)!.createdAt.toISOString()}|${page.at(-1)!.id}` : null };
+    return { items: page, hasMore: rows.length > page.length, nextCursor: page.length && rows.length > page.length ? encodeNotificationCursor({ createdAt: page.at(-1)!.createdAt.toISOString(), id: page.at(-1)!.id }) : null };
   }
   async countUnread(userId: string, at: Date) { return this.rows.filter((r) => r.userId === userId && !r.deletedAt && r.expiresAt > at && !r.readAt).length; }
   async findActiveOwned(userId: string, id: string, at: Date) { return this.rows.find((r) => r.userId === userId && r.id === id && !r.deletedAt && r.expiresAt > at) ?? null; }
-  async markReadOwned(userId: string, id: string, at: Date) { const row = await this.findActiveOwned(userId, id, at); if (row && !row.readAt) row.readAt = at; return row; }
+  async markReadOwned(userId: string, id: string, at: Date) { const row = await this.findActiveOwned(userId, id, at); const changed = Boolean(row && !row.readAt); if (row && changed) row.readAt = at; return row ? { row, changed } : null; }
   async markAllRead(userId: string, at: Date) { let count = 0; for (const row of this.rows) if (row.userId === userId && !row.deletedAt && row.expiresAt > at && !row.readAt) { row.readAt = at; count++; } return count; }
-  async softDeleteOwned(userId: string, id: string, at: Date) { const row = this.rows.find((r) => r.userId === userId && r.id === id && r.expiresAt > at) ?? null; if (row) row.deletedAt ??= at; return row; }
+  async softDeleteOwned(userId: string, id: string, at: Date) { const row = this.rows.find((r) => r.userId === userId && r.id === id && r.expiresAt > at) ?? null; const changed = Boolean(row && !row.deletedAt); if (row && changed) row.deletedAt = at; return row ? { row, changed } : null; }
   async getPreferences(userId: string) { return Object.entries(Object.fromEntries(this.preferences)).filter(([key]) => key.startsWith(`${userId}:`)).map(([key, enabled]) => ({ category: key.slice(userId.length + 1) as NotificationCategory, enabled })); }
   async upsertPreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>) { for (const [category, enabled] of Object.entries(values)) this.preferences.set(`${userId}:${category}`, Boolean(enabled)); return this.getPreferences(userId); }
   async findByDedupeKey(key: string) { return this.rows.find((row) => row.dedupeKey === key) ?? null; }
@@ -51,9 +52,18 @@ describe("NotificationsService", () => {
     const service = new NotificationsService(repo, { now: () => now });
     const first = await service.list("user-a", { limit: 99 });
     expect(first.items).toHaveLength(50); expect(first.hasMore).toBe(true); expect(first.nextCursor).toBeTruthy();
+    expect(decodeNotificationCursor(first.nextCursor!)).toEqual({ createdAt: new Date(now.getTime() - 49_000).toISOString(), id: "n-49" });
     await expect(service.list("user-a", { limit: 50, cursor: first.nextCursor! })).resolves.toMatchObject({ items: [{ id: "n-50" }, { id: "n-51" }], hasMore: false });
     await expect(service.list("user-a", { limit: 50, category: NotificationCategory.MESSAGES, unread: true })).resolves.toMatchObject({ items: [{ id: "n-00" }] });
     await expect(service.list("user-a", { limit: 50, unread: false })).resolves.toMatchObject({ items: [{ id: "n-01" }] });
+  });
+
+  it("uses Task 2 opaque cursors and rejects malformed or extra cursor fields", () => {
+    const encoded = encodeNotificationCursor({ createdAt: "2026-08-24T11:59:11.000Z", id: "n-49" });
+    expect(decodeNotificationCursor(encoded)).toEqual({ createdAt: "2026-08-24T11:59:11.000Z", id: "n-49" });
+    const extraField = Buffer.from(JSON.stringify({ createdAt: "2026-08-24T11:59:11.000Z", id: "n-49", userId: "must-not-be-accepted" }), "utf8").toString("base64url");
+    expect(() => decodeNotificationCursor("not-base64")).toThrow("Invalid notification cursor");
+    expect(() => decodeNotificationCursor(extraField)).toThrow("Invalid notification cursor");
   });
 
   it("counts only active unread rows", async () => {
@@ -81,5 +91,12 @@ describe("NotificationsService", () => {
     const first = await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { dedupeKey: "event-1" });
     const second = await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { dedupeKey: "event-1" });
     expect(repo.rows[0].expiresAt.toISOString()).toBe("2026-11-22T12:00:00.000Z"); expect(second!.id).toBe(first!.id); expect(repo.rows).toHaveLength(1); expect(signals).toEqual([["user-a", first!.id, 1]]);
+  });
+
+  it("does not publish a signal for idempotent read, delete, or read-all no-ops", async () => {
+    const repo = new MemoryRepo(); repo.rows = [active("read", { readAt: now }), active("deleted", { deletedAt: now })];
+    const publishSignal = jest.fn(); const service = new NotificationsService(repo, { now: () => now, publishSignal });
+    await service.markRead("user-a", "read"); await service.delete("user-a", "deleted"); await service.markAllRead("user-a");
+    expect(publishSignal).not.toHaveBeenCalled();
   });
 });
