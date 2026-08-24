@@ -8,6 +8,7 @@ export type StoredNotification = {
 };
 export type OwnedNotificationMutation = { row: StoredNotification; changed: boolean };
 export type NewNotification = Omit<StoredNotification, "id" | "updatedAt">;
+export type AggregatePersistence = { row: StoredNotification; changed: boolean };
 export type NotificationsRepository = {
   listActive(userId: string, query: NotificationListQuery, now: Date): Promise<{ items: StoredNotification[]; hasMore: boolean; nextCursor: string | null }>;
   countUnread(userId: string, now: Date): Promise<number>;
@@ -20,7 +21,7 @@ export type NotificationsRepository = {
   findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null>;
   findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null>;
   create(input: NewNotification): Promise<StoredNotification>;
-  persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<StoredNotification>;
+  persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence>;
   updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>): Promise<StoredNotification>;
 };
 type Options = { now?: () => Date; publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void };
@@ -45,8 +46,8 @@ export class NotificationsService {
     const createdAt = this.now(); const expiresAt = new Date(createdAt.getTime() + 90 * 24 * 60 * 60 * 1000);
     const input: NewNotification = { userId: payload.recipientId, type, ...rendered, dedupeKey: options.dedupeKey ?? null, aggregationKey: options.aggregationKey ?? null, readAt: null, deletedAt: null, expiresAt, createdAt };
     if (options.aggregationKey) {
-      const row = await this.repo.persistAggregate({ ...input, aggregationKey: options.aggregationKey });
-      await this.signal(row.userId, row.id); return toDto(row);
+      const result = await this.repo.persistAggregate({ ...input, aggregationKey: options.aggregationKey });
+      if (result.changed) await this.signal(result.row.userId, result.row.id); return toDto(result.row);
     }
     let row: StoredNotification;
     try { row = await this.repo.create(input); }

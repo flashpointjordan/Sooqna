@@ -22,23 +22,24 @@ jest.mock("../../middleware/requireVerifiedEmail", () => ({
     next();
   },
 }));
-jest.mock("./notifications.controller", () => ({
-  listNotifications(_req: express.Request, res: express.Response) { res.status(200).json({ success: true, data: { items: [], hasMore: false, nextCursor: null } }); },
-  getUnreadCount(_req: express.Request, res: express.Response) { res.status(200).json({ success: true, data: { unreadCount: 3 } }); },
-  markNotificationRead(req: express.Request, res: express.Response) { if (req.params.notificationId === "other") { res.status(404).json({ success: false, code: "NOT_FOUND" }); return; } res.status(200).json({ success: true, data: { id: req.params.notificationId } }); },
-  markAllNotificationsRead(_req: express.Request, res: express.Response) { res.status(200).json({ success: true, data: { updatedCount: 2, unreadCount: 1 } }); },
-  deleteNotification(req: express.Request, res: express.Response) { if (req.params.notificationId === "other") { res.status(404).json({ success: false, code: "NOT_FOUND" }); return; } res.status(200).json({ success: true, data: { id: req.params.notificationId } }); },
-  getNotificationPreferences(_req: express.Request, res: express.Response) { res.status(200).json({ success: true, data: { MESSAGES: true, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true } }); },
-  updateNotificationPreferences(_req: express.Request, res: express.Response) { res.status(200).json({ success: true, data: { MESSAGES: false, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true } }); },
-}));
-
+jest.mock("./notifications.repository", () => ({ PrismaNotificationsRepository: class {} }));
 import { notificationListQuerySchema, notificationPreferencesUpdateBodySchema } from "./notifications.schemas";
-import { notificationsRouter } from "./notifications.routes";
+import { createNotificationsController } from "./notifications.controller";
+import { createNotificationsRouter } from "./notifications.routes";
+import type { NotificationsControllerService } from "./notifications.controller";
+import type { NotificationDto } from "./notifications.types";
 
+const notification = (id: string): NotificationDto => ({ id, type: "LISTING_APPROVED", category: "LISTINGS", title: "title", body: "body", actionUrl: null, entityType: null, entityId: null, metadata: {}, readAt: null, createdAt: "2026-08-24T12:00:00.000Z" });
+const fakeService: NotificationsControllerService = {
+  list: async () => ({ items: [], hasMore: false, nextCursor: null }), unreadCount: async () => 3,
+  markRead: async (_userId, id) => { if (id === "other") throw new (require("../../shared/errors/appError").AppError)(404, "Notification not found.", "NOT_FOUND"); return notification(id); },
+  markAllRead: async () => ({ updatedCount: 2, unreadCount: 1 }), delete: async (_userId, id) => { if (id === "other") throw new (require("../../shared/errors/appError").AppError)(404, "Notification not found.", "NOT_FOUND"); return notification(id); },
+  getPreferences: async () => ({ MESSAGES: true, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true }), updatePreferences: async () => ({ MESSAGES: false, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true }),
+};
 function testApp(): express.Express {
   const app = express();
   app.use(express.json());
-  app.use("/api/notifications", notificationsRouter);
+  app.use("/api/notifications", createNotificationsRouter(createNotificationsController(fakeService)));
   app.use(errorHandler);
   return app;
 }
@@ -54,9 +55,9 @@ describe("notification REST route contract", () => {
   });
 
   it("registers fixed routes before parameterized notification IDs", () => {
-    const paths = notificationsRouter.stack.map((layer) => layer.route?.path).filter(Boolean);
+    const router = createNotificationsRouter(createNotificationsController(fakeService)); const paths = router.stack.map((layer) => layer.route?.path).filter(Boolean);
     expect(paths).toEqual(["/", "/unread-count", "/read-all", "/preferences", "/preferences", "/:notificationId/read", "/:notificationId"]);
-    expect(notificationsRouter.stack.slice(0, 4).map((layer) => layer.handle.name)).toEqual(["verifyFirebaseToken", "requireCurrentUser", "requireActiveUser", "requireVerifiedEmail"]);
+    expect(router.stack.slice(0, 4).map((layer) => layer.handle.name)).toEqual(["verifyFirebaseToken", "requireCurrentUser", "requireActiveUser", "requireVerifiedEmail"]);
   });
 
   it("rejects unauthenticated and unverified requests before reaching controllers", async () => {
