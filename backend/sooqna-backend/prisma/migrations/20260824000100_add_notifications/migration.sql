@@ -31,7 +31,7 @@ CREATE TABLE "Notification" (
     "deletedAt" TIMESTAMP(3),
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Notification_pkey" PRIMARY KEY ("id")
 );
@@ -43,7 +43,7 @@ CREATE TABLE "NotificationPreference" (
     "category" "NotificationCategory" NOT NULL,
     "enabled" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "NotificationPreference_pkey" PRIMARY KEY ("id")
 );
@@ -63,7 +63,7 @@ CREATE TABLE "NotificationOutbox" (
     "processedAt" TIMESTAMP(3),
     "lastError" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "NotificationOutbox_pkey" PRIMARY KEY ("id")
 );
@@ -81,7 +81,7 @@ CREATE TABLE "NotificationBroadcast" (
     "deliveredCount" INTEGER NOT NULL DEFAULT 0,
     "createdBy" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "NotificationBroadcast_pkey" PRIMARY KEY ("id")
 );
