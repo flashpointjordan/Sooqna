@@ -40,15 +40,21 @@ export class NotificationsService {
   async getPreferences(userId: string): Promise<Record<NotificationCategory, boolean>> { const stored = new Map((await this.repo.getPreferences(userId)).map((item) => [item.category, item.enabled])); return Object.fromEntries([...optional.map((category) => [category, stored.get(category) ?? true]), ...locked.map((category) => [category, true])]) as Record<NotificationCategory, boolean>; }
   async updatePreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>) { const permissible = Object.fromEntries(optional.filter((category) => values[category] !== undefined).map((category) => [category, values[category]!])) as Partial<Record<NotificationCategory, boolean>>; await this.repo.upsertPreferences(userId, permissible); return this.getPreferences(userId); }
   async createFromEvent(type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey?: string; aggregationKey?: string } = {}): Promise<NotificationDto | null> {
-    if (options.dedupeKey) { const existing = await this.repo.findByDedupeKey(options.dedupeKey); if (existing) return toDto(existing); }
+    const result = await this.persistFromEvent(type, payload, options);
+    if (!result.row) return null;
+    if (result.changed) await this.signal(result.row.userId, result.row.id);
+    return toDto(result.row);
+  }
+  async persistFromEvent(type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey?: string; aggregationKey?: string } = {}): Promise<{ row: StoredNotification | null; changed: boolean }> {
+    if (options.dedupeKey) { const existing = await this.repo.findByDedupeKey(options.dedupeKey); if (existing) return { row: existing, changed: false }; }
     const rendered = renderNotification(type, payload); const preferences = await this.getPreferences(payload.recipientId);
-    if (!preferences[rendered.category]) return null;
+    if (!preferences[rendered.category]) return { row: null, changed: false };
     const createdAt = this.now(); const expiresAt = new Date(createdAt.getTime() + 90 * 24 * 60 * 60 * 1000);
     const input: NewNotification = { userId: payload.recipientId, type, ...rendered, dedupeKey: options.dedupeKey ?? null, aggregationKey: options.aggregationKey ?? null, readAt: null, deletedAt: null, expiresAt, createdAt };
     if (options.aggregationKey) {
       const result = await this.repo.persistAggregate({ ...input, aggregationKey: options.aggregationKey });
-      if (!result) return null;
-      if (result.changed) await this.signal(result.row.userId, result.row.id); return toDto(result.row);
+      if (!result) return { row: null, changed: false };
+      return result;
     }
     let row: StoredNotification;
     try { row = await this.repo.create(input); }
@@ -56,10 +62,11 @@ export class NotificationsService {
       if (!options.dedupeKey || !isUniqueConflict(error)) throw error;
       const existing = await this.repo.findByDedupeKey(options.dedupeKey);
       if (!existing) throw error;
-      return toDto(existing);
+      return { row: existing, changed: false };
     }
-    await this.signal(row.userId, row.id); return toDto(row);
+    return { row, changed: true };
   }
+  async signalPersisted(userId: string, notificationId: string, unreadCount?: number): Promise<void> { await this.publishSignal(userId, notificationId, unreadCount ?? await this.unreadCount(userId)); }
   private async signal(userId: string, notificationId: string): Promise<void> { await this.publishSignal(userId, notificationId, await this.unreadCount(userId)); }
 }
 function toDto(row: StoredNotification): NotificationDto { return { id: row.id, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, readAt: row.readAt?.toISOString() ?? null, createdAt: row.createdAt.toISOString() }; }
