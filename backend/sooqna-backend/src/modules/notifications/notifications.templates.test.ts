@@ -76,7 +76,7 @@ const payloads = {
     recipientId: "recipient-1",
     savedSearchId: "search-1",
     savedSearchName: "شقق دمشق",
-    query: { city: "damascus", category: "real-estate", maxPrice: 500 },
+    query: { q: "cars", city: "damascus", category: "real-estate", maxPrice: 500 },
     matchingListingIds: ["listing-8", "listing-9"],
     totalCount: 2,
   },
@@ -92,7 +92,6 @@ const payloads = {
     eventType: NotificationType.SECURITY_ALERT,
     recipientId: "recipient-1",
     alertId: "alert-1",
-    securityText: "تم تسجيل دخول جديد إلى حسابك.",
   },
 } satisfies Record<NotificationType, NotificationEventPayload>;
 
@@ -107,7 +106,7 @@ const expected = {
     category: NotificationCategory.LISTINGS,
     entityType: "listing",
     entityId: "listing-2",
-    actionUrl: "/my-listings",
+    actionUrl: "/listings/listing-2",
   },
   LISTING_REJECTED: {
     category: NotificationCategory.LISTINGS,
@@ -137,13 +136,13 @@ const expected = {
     category: NotificationCategory.ENGAGEMENT,
     entityType: "review",
     entityId: "review-1",
-    actionUrl: "/listings/listing-7",
+    actionUrl: "/me",
   },
   SAVED_SEARCH_MATCHES: {
     category: NotificationCategory.SAVED_SEARCHES,
     entityType: "savedSearch",
     entityId: "search-1",
-    actionUrl: "/listings?category=real-estate&city=damascus&maxPrice=500",
+    actionUrl: "/listings?search=cars&category=real-estate&city=damascus&maxPrice=500",
   },
   SYSTEM_ANNOUNCEMENT: {
     category: NotificationCategory.SYSTEM,
@@ -233,6 +232,41 @@ describe("notification rendering contracts", () => {
       matchingListingIds: Array.from({ length: 10 }, (_, index) => `listing-${index}`),
       totalCount: 12,
     });
+  });
+
+  it("maps saved-search q to the public listings search parameter while preserving safe filters", () => {
+    const rendered = renderNotification(NotificationType.SAVED_SEARCH_MATCHES, {
+      ...payloads.SAVED_SEARCH_MATCHES,
+      query: { q: "  used cars  ", city: "damascus", minPrice: 100, condition: "used" },
+    });
+    const action = new URL(rendered.actionUrl!, "https://sooqna.test");
+
+    expect(action.pathname).toBe("/listings");
+    expect(action.searchParams.get("search")).toBe("used cars");
+    expect(action.searchParams.get("q")).toBeNull();
+    expect(action.searchParams.get("city")).toBe("damascus");
+    expect(action.searchParams.get("minPrice")).toBe("100");
+    expect(action.searchParams.get("condition")).toBe("used");
+  });
+
+  it("uses fixed safe security copy and ignores arbitrary payload text", () => {
+    const secret = "token=abc123 email=private@example.com password=do-not-render";
+    const unsafeSecurityPayload = {
+      ...payloads.SECURITY_ALERT,
+      securityText: secret,
+      token: secret,
+      email: "private@example.com",
+      password: "do-not-render",
+    };
+    const rendered = renderNotification(NotificationType.SECURITY_ALERT, unsafeSecurityPayload);
+    const visible = JSON.stringify({ title: rendered.title, body: rendered.body, metadata: rendered.metadata });
+
+    expect(rendered.title).toMatch(/[\u0600-\u06FF]/);
+    expect(rendered.body).toMatch(/[\u0600-\u06FF]/);
+    expect(visible).not.toContain("token=");
+    expect(visible).not.toContain("private@example.com");
+    expect(visible).not.toContain("password");
+    expect(rendered.metadata).toEqual({ alertId: "alert-1" });
   });
 
   it("rejects unsafe and non-internal action URLs", () => {

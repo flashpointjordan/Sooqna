@@ -18,17 +18,17 @@ export type RenderedNotification = {
 
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
 const HAS_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/;
-const SAVED_SEARCH_QUERY_KEYS: Array<keyof SavedSearchQueryFacts> = [
-  "q",
-  "category",
-  "city",
-  "minPrice",
-  "maxPrice",
-  "priceMin",
-  "priceMax",
-  "condition",
-  "sort",
-];
+const SAVED_SEARCH_QUERY_PARAMS = [
+  ["q", "search"],
+  ["category", "category"],
+  ["city", "city"],
+  ["minPrice", "minPrice"],
+  ["maxPrice", "maxPrice"],
+  ["priceMin", "priceMin"],
+  ["priceMax", "priceMax"],
+  ["condition", "condition"],
+  ["sort", "sort"],
+] as const satisfies ReadonlyArray<readonly [keyof SavedSearchQueryFacts, string]>;
 const CATEGORY_BY_TYPE = {
   MESSAGE_RECEIVED: NotificationCategory.MESSAGES,
   LISTING_APPROVED: NotificationCategory.LISTINGS,
@@ -76,13 +76,13 @@ function listingUrl(listingId: string): string {
 
 function canonicalSavedSearchUrl(query: SavedSearchQueryFacts): string {
   const params = new URLSearchParams();
-  for (const key of SAVED_SEARCH_QUERY_KEYS) {
+  for (const [key, parameter] of SAVED_SEARCH_QUERY_PARAMS) {
     const value = query[key];
     if (typeof value === "string") {
       const cleaned = cleanText(value, 120);
-      if (cleaned) params.set(key, cleaned);
+      if (cleaned) params.set(parameter, cleaned);
     } else if (typeof value === "number" && Number.isFinite(value)) {
-      params.set(key, String(value));
+      params.set(parameter, String(value));
     }
   }
   const search = params.toString();
@@ -133,7 +133,7 @@ function render(type: NotificationType, payload: NotificationEventPayload): Rend
         category: categoryFor(payload.eventType),
         title: "تمت الموافقة على إعلانك",
         body: cleanText(`أصبح إعلان «${payload.listingTitle}» منشوراً الآن.`, 240),
-        actionUrl: "/my-listings",
+        actionUrl: listingUrl(payload.listingId),
         entityType: "listing",
         entityId: cleanId(payload.listingId),
         metadata: { listingId: cleanId(payload.listingId) },
@@ -189,7 +189,7 @@ function render(type: NotificationType, payload: NotificationEventPayload): Rend
         category: categoryFor(payload.eventType),
         title: "تلقيت تقييماً جديداً",
         body: cleanText(`قيّمك ${payload.reviewerName} بـ ${rating} من 5 بخصوص «${payload.listingTitle}».`, 240),
-        actionUrl: listingUrl(payload.listingId),
+        actionUrl: "/me",
         entityType: "review",
         entityId: cleanId(payload.reviewId),
         metadata: {
@@ -231,7 +231,7 @@ function render(type: NotificationType, payload: NotificationEventPayload): Rend
       return {
         category: categoryFor(payload.eventType),
         title: "تنبيه أمني للحساب",
-        body: cleanText(payload.securityText, 240),
+        body: "لاحظنا نشاطاً أمنياً يحتاج إلى مراجعة. تحقق من إعدادات حسابك.",
         actionUrl: "/me/settings",
         entityType: "securityAlert",
         entityId: cleanId(payload.alertId),
