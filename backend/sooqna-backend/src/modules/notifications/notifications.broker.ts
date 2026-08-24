@@ -7,6 +7,7 @@ export type NotificationSignal = {
   unreadCount: number;
   version: number;
 };
+export type NotificationPublisher = (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void;
 
 /**
  * Process-local SSE broker. A Redis Pub/Sub adapter can replace this boundary
@@ -53,12 +54,33 @@ export class NotificationBroker {
 }
 
 let productionBroker: NotificationBroker | undefined;
+let productionPublisher: NotificationPublisher | undefined;
 
 export function setNotificationBroker(broker: NotificationBroker): void {
   productionBroker = broker;
+  productionPublisher = createNotificationPublisher(broker);
 }
 
 export function getNotificationBroker(): NotificationBroker {
   productionBroker ??= new NotificationBroker();
   return productionBroker;
+}
+
+export function createNotificationPublisher(broker: Pick<NotificationBroker, "publish">): NotificationPublisher {
+  return (userId, notificationId, unreadCount) => {
+    broker.publish(userId, { event: "notification", id: notificationId, unreadCount, version: 1 });
+  };
+}
+
+export function setNotificationPublisher(publisher: NotificationPublisher): void {
+  productionPublisher = publisher;
+}
+
+export function getNotificationPublisher(): NotificationPublisher {
+  productionPublisher ??= createNotificationPublisher(getNotificationBroker());
+  return productionPublisher;
+}
+
+export function publishNotificationSignal(userId: string, notificationId: string, unreadCount: number): Promise<void> | void {
+  return getNotificationPublisher()(userId, notificationId, unreadCount);
 }
