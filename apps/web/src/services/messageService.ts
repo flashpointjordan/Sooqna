@@ -1,4 +1,5 @@
 import { apiFetch } from "@/services/apiClient";
+import { withRetry } from "@/services/requestRetry";
 import type {
   Conversation,
   CreateConversationInput,
@@ -29,20 +30,6 @@ function readPendingMessages(): PendingMessage[] {
 function writePendingMessages(items: PendingMessage[]): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(PENDING_MESSAGES_KEY, JSON.stringify(items));
-}
-
-async function withRetry<T>(task: () => Promise<T>, retries = 2, delayMs = 400): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      return await task();
-    } catch (error) {
-      lastError = error;
-      if (attempt === retries) break;
-      await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
-    }
-  }
-  throw lastError;
 }
 
 export async function getConversationById(
@@ -85,12 +72,13 @@ export async function getConversationMessages(
 export async function createConversation(
   input: CreateConversationInput
 ): Promise<{ conversationId: string }> {
-  const response = await withRetry(() =>
-    apiFetch<{ success: true; conversation: Conversation }>("/messages/conversations", {
+  const response = await apiFetch<{ success: true; conversation: Conversation }>(
+    "/messages/conversations",
+    {
       method: "POST",
       authenticated: true,
       body: JSON.stringify({ listingId: input.listingId }),
-    })
+    }
   );
 
   return { conversationId: response.conversation.id };
@@ -100,10 +88,9 @@ export async function createMessage(
   conversationId: string,
   input: CreateMessageInput
 ): Promise<{ messageId: string }> {
-  const response = await withRetry(() =>
-    apiFetch<{ success: true; message: Message }>(
-      `/messages/conversations/${conversationId}/messages`,
-      {
+  const response = await apiFetch<{ success: true; message: Message }>(
+    `/messages/conversations/${conversationId}/messages`,
+    {
       method: "POST",
       authenticated: true,
       body: JSON.stringify({
@@ -111,18 +98,18 @@ export async function createMessage(
         text: input.text,
         attachments: input.attachments ?? [],
       }),
-      }
-    )
+    }
   );
   return { messageId: response.message.id };
 }
 
 export async function markConversationRead(conversationId: string): Promise<number> {
-  const response = await withRetry(() =>
-    apiFetch<{ success: true; updatedCount: number }>(`/messages/conversations/${conversationId}/read`, {
+  const response = await apiFetch<{ success: true; updatedCount: number }>(
+    `/messages/conversations/${conversationId}/read`,
+    {
       method: "POST",
       authenticated: true,
-    })
+    }
   );
   return response.updatedCount;
 }

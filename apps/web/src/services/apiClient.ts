@@ -1,4 +1,5 @@
 import { auth } from "@/lib/firebase";
+import { ApiRequestError, parseRetryAfterSeconds } from "@/services/apiRequestError";
 
 const DEFAULT_API_BASE = "http://localhost:5000/api";
 /** Abort public requests after 15 s — avoids infinite skeleton on 504s */
@@ -45,12 +46,14 @@ export async function apiFetch<T>(
     if (!response.ok) {
       const text = await response.text();
       let message = text || `API request failed with ${response.status}`;
+      let code: string | null = null;
+      const retryAfterSeconds = parseRetryAfterSeconds(response.headers.get("Retry-After"));
       try {
         const parsed = JSON.parse(text) as { message?: string; code?: string };
+        code = parsed.code ?? null;
         if (response.status === 429) {
-          const retryAfter = response.headers.get("Retry-After");
-          message = retryAfter
-            ? `طلبات كثيرة. يمكنك المحاولة بعد ${retryAfter} ثانية.`
+          message = retryAfterSeconds !== null
+            ? `طلبات كثيرة. يمكنك المحاولة بعد ${retryAfterSeconds} ثانية.`
             : "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى.";
         } else {
           message = parsed.message || parsed.code || message;
@@ -60,12 +63,16 @@ export async function apiFetch<T>(
           message = "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى.";
         }
       }
-      throw new Error(message);
+      throw new ApiRequestError(message, response.status, code, retryAfterSeconds);
     }
     return (await response.json()) as T;
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
-      throw new Error("انتهت مهلة الاتصال بالخادم. تحقق من اتصالك أو حاول لاحقاً.");
+      throw new ApiRequestError(
+        "انتهت مهلة الاتصال بالخادم. تحقق من اتصالك أو حاول لاحقاً.",
+        null,
+        "REQUEST_TIMEOUT"
+      );
     }
     throw err;
   } finally {
