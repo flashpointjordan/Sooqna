@@ -16,6 +16,7 @@ import { adminRouter } from "../modules/admin/admin.routes";
 import { contactRouter } from "../modules/contact/contact.routes";
 import { marketRouter } from "../modules/market/market.routes";
 import { savedSearchesRouter } from "../modules/saved-searches/savedSearches.routes";
+import { notificationsRouter } from "../modules/notifications/notifications.routes";
 import { verifyFirebaseToken } from "../middleware/verifyFirebaseToken";
 import { requireActiveUser, requireCurrentUser } from "../middleware/authContext";
 import { checkRole } from "../middleware/checkRole";
@@ -114,4 +115,5 @@ apiRouter.use("/admin", adminRouter);
 apiRouter.use("/contact", contactRouter);
 apiRouter.use("/market", marketRouter);
 apiRouter.use("/saved-searches", savedSearchesRouter);
+apiRouter.use("/notifications", notificationsRouter);
 
