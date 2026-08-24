@@ -192,12 +192,13 @@ describe("notification rendering contracts", () => {
   });
 
   it("sanitizes message context, caps Unicode code points, and keeps private text out of metadata", () => {
-    const secretPreview = `${"🙂".repeat(130)}\n private-message-body token=abc@example.com`;
+    const safePreview = "🙂".repeat(130);
+    const privateSuffix = "PRIVATE_SECRET token=abc@example.com";
     const unsafePayload = {
       ...payloads.MESSAGE_RECEIVED,
       senderName: "  أحمد\u0000\nالمرسل ",
       listingTitle: "  دراجة\tهوائية ",
-      messagePreview: secretPreview,
+      messagePreview: `${safePreview}${privateSuffix}`,
       password: "not-for-notification-metadata",
       unknownField: "never-rendered",
     };
@@ -205,8 +206,10 @@ describe("notification rendering contracts", () => {
 
     expect(rendered.body).not.toMatch(/[\u0000\n\t]/);
     expect(rendered.title).toContain("أحمد المرسل");
-    expect(codePoints(rendered.body)).toBeLessThanOrEqual(240);
-    expect(JSON.stringify(rendered.metadata)).not.toContain("private-message-body");
+    expect(rendered.body).toBe(`بخصوص دراجة هوائية: ${"🙂".repeat(120)}`);
+    expect(codePoints(rendered.body)).toBe(codePoints("بخصوص دراجة هوائية: ") + 120);
+    expect(rendered.body).not.toContain("PRIVATE_SECRET");
+    expect(JSON.stringify(rendered.metadata)).not.toContain("PRIVATE_SECRET");
     expect(JSON.stringify(rendered.metadata)).not.toContain("token=");
     expect(JSON.stringify(rendered.metadata)).not.toContain("@example.com");
     expect(JSON.stringify(rendered.metadata)).not.toContain("password");
