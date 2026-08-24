@@ -46,6 +46,6 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
     expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ readAt: null, title: "new" }) }));
-    expect(result.readAt).toBeNull();
+    expect(result.row.readAt).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 import { Prisma, type NotificationCategory } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
-import type { NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
+import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
 
 function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput | undefined {
   if (!cursor) return undefined;
@@ -49,15 +49,24 @@ export class PrismaNotificationsRepository implements NotificationsRepository {
   async findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null> { const row = await prisma.notification.findUnique({ where: { dedupeKey } }); return row && toStored(row); }
   async findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null> { const row = await prisma.notification.findFirst({ where: { aggregationKey, deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }); return row && toStored(row); }
   async create(input: NewNotification): Promise<StoredNotification> { return toStored(await prisma.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } })); }
-  async persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<StoredNotification> {
+  async persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence> {
     return prisma.$transaction(async (tx) => {
       await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.aggregationKey}, 0))`);
       const existing = await tx.notification.findFirst({ where: { userId: input.userId, aggregationKey: input.aggregationKey, deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
-      if (existing) return toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: input.title, body: input.body, actionUrl: input.actionUrl, metadata: input.metadata as Prisma.InputJsonValue, expiresAt: input.expiresAt, readAt: null } }));
-      return toStored(await tx.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } }));
+      const processed = processedDedupeKeys(existing?.metadata);
+      if (existing && input.dedupeKey && processed.includes(input.dedupeKey)) return { row: toStored(existing), changed: false };
+      const metadata = { ...input.metadata, ...(input.dedupeKey ? { processedDedupeKeys: [...processed, input.dedupeKey].slice(-100) } : {}) };
+      if (existing) return { row: toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: input.title, body: input.body, actionUrl: input.actionUrl, metadata: metadata as Prisma.InputJsonValue, expiresAt: input.expiresAt, readAt: null } })), changed: true };
+      return { row: toStored(await tx.notification.create({ data: { ...input, metadata: metadata as Prisma.InputJsonValue } })), changed: true };
     });
   }
   async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>): Promise<StoredNotification> { return toStored(await prisma.notification.update({ where: { id }, data: { ...input, ...(input.metadata ? { metadata: input.metadata as Prisma.InputJsonValue } : {}), readAt: null } })); }
+}
+
+function processedDedupeKeys(metadata: Prisma.JsonValue | undefined): string[] {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+  const value = (metadata as Record<string, unknown>).processedDedupeKeys;
+  return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string" && key.length <= 256).slice(-100) : [];
 }
 
 function toStored(row: Awaited<ReturnType<typeof prisma.notification.findFirst>> & object): StoredNotification {
