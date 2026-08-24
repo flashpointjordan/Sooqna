@@ -32,3 +32,6 @@ backend/sooqna-backend/uploads/profiles/*
 **/.next/
 **/dist/
 **/*.tsbuildinfo
+
+# Local Git worktrees
+/.worktrees/
