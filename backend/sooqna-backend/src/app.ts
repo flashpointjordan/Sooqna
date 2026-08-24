@@ -11,6 +11,7 @@ import { errorHandler } from "./middleware/errorHandler";
 import { notFoundHandler } from "./middleware/notFound";
 import swaggerUi from "swagger-ui-express";
 import { shouldExposeApiDocs } from "./routes/securityPolicy";
+import { createRateLimitHandler } from "./middleware/rateLimitHandler";
 
 export const app = express();
 
@@ -51,6 +52,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "Too many requests. Please try again later." },
+    handler: createRateLimitHandler("general", { success: false, code: "RATE_LIMITED", message: "Too many requests. Please try again later." }),
   })
 );
 
@@ -63,6 +65,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "Too many auth requests. Please try again later." },
+    handler: createRateLimitHandler("auth", { success: false, code: "RATE_LIMITED", message: "Too many auth requests. Please try again later." }),
   })
 );
 
@@ -75,6 +78,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "Too many report requests." },
+    handler: createRateLimitHandler("reports", { success: false, code: "RATE_LIMITED", message: "Too many report requests." }),
   })
 );
 
@@ -86,6 +90,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "Too many messaging requests." },
+    handler: createRateLimitHandler("messages", { success: false, code: "RATE_LIMITED", message: "Too many messaging requests." }),
   })
 );
 
@@ -97,6 +102,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "Too many favorites requests." },
+    handler: createRateLimitHandler("favorites", { success: false, code: "RATE_LIMITED", message: "Too many favorites requests." }),
   })
 );
 
@@ -108,6 +114,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى." },
+    handler: createRateLimitHandler("listings-read", { success: false, code: "RATE_LIMITED", message: "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى." }),
   })
 );
 
@@ -120,6 +127,7 @@ app.use(
     legacyHeaders: false,
     skip: (req) => req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS",
     message: { success: false, code: "RATE_LIMITED", message: "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى." },
+    handler: createRateLimitHandler("listings-write", { success: false, code: "RATE_LIMITED", message: "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى." }),
   })
 );
 
@@ -131,6 +139,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, code: "RATE_LIMITED", message: "Too many admin requests." },
+    handler: createRateLimitHandler("admin", { success: false, code: "RATE_LIMITED", message: "Too many admin requests." }),
   })
 );
 
@@ -142,6 +151,7 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, error: "Too many contact requests." },
+    handler: createRateLimitHandler("contact", { success: false, error: "Too many contact requests." }),
   })
 );
 
