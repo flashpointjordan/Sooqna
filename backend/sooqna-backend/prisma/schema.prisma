@@ -132,7 +132,7 @@ model NotificationPreference {
 
 model NotificationOutbox {
   id            String                  @id @default(cuid())
-  eventType     String
+  eventType     NotificationType
   aggregateType String
   aggregateId   String
   recipientId   String?
