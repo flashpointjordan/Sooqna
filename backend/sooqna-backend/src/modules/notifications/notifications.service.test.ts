@@ -14,7 +14,7 @@ const active = (id: string, overrides: Partial<StoredNotification> = {}): Stored
 class MemoryRepo implements NotificationsRepository {
   rows: StoredNotification[] = [];
   preferences = new Map<string, boolean>();
-  processedAggregateDedupe = new Set<string>();
+  outboxEvents = new Map<string, "PENDING" | "PROCESSING" | "PROCESSED">();
   async listActive(userId: string, query: { limit: number; cursor?: string; category?: NotificationCategory; unread?: boolean }, at: Date) {
     let rows = this.rows.filter((row) => row.userId === userId && !row.deletedAt && row.expiresAt > at && (!query.category || row.category === query.category) && (query.unread === undefined || (query.unread ? !row.readAt : !!row.readAt)));
     rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
@@ -32,7 +32,7 @@ class MemoryRepo implements NotificationsRepository {
   async findByDedupeKey(key: string) { return this.rows.find((row) => row.dedupeKey === key) ?? null; }
   async findCurrentAggregate(key: string) { return this.rows.find((row) => row.aggregationKey === key && !row.deletedAt) ?? null; }
   async create(input: Omit<StoredNotification, "id" | "updatedAt">) { const row = active(`n-${this.rows.length + 1}`, { ...input, updatedAt: input.createdAt }); this.rows.push(row); return row; }
-  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && this.processedAggregateDedupe.has(input.dedupeKey)) return { row: row!, changed: false }; if (input.dedupeKey) this.processedAggregateDedupe.add(input.dedupeKey); if (row) { Object.assign(row, { ...input, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create(input), changed: true }; }
+  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && !this.outboxEvents.has(input.dedupeKey)) throw Object.assign(new Error("outbox missing"), { code: "NOTIFICATION_EVENT_NOT_FOUND" }); if (input.dedupeKey && this.outboxEvents.get(input.dedupeKey) === "PROCESSED") return { row: row!, changed: false }; if (row) { Object.assign(row, { ...input, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create(input), changed: true }; }
   async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { const row = this.rows.find((item) => item.id === id)!; Object.assign(row, input, { readAt: null }); return row; }
 }
 
@@ -123,8 +123,10 @@ describe("NotificationsService", () => {
 
   it("deduplicates aggregate events durably across A, B, replay B, and concurrent B", async () => {
     const repo = new MemoryRepo(); const publishSignal = jest.fn(); const service = new NotificationsService(repo, { now: () => now, publishSignal });
+    repo.outboxEvents.set("A", "PENDING"); repo.outboxEvents.set("B", "PENDING");
     await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "A" });
     await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" });
+    repo.outboxEvents.set("B", "PROCESSED");
     await service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" });
     await Promise.all([service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" }), service.createFromEvent(NotificationType.LISTING_APPROVED, payload, { aggregationKey: "listing-1:hour", dedupeKey: "B" })]);
     expect(repo.rows).toHaveLength(1); expect(repo.rows[0].metadata).not.toHaveProperty("processedDedupeKeys"); expect(publishSignal).toHaveBeenCalledTimes(2);

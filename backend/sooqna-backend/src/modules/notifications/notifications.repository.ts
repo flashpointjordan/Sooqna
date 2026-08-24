@@ -1,4 +1,5 @@
 import { NotificationOutboxState, Prisma, type NotificationCategory } from "@prisma/client";
+import { AppError } from "../../shared/errors/appError";
 import { prisma } from "../../config/prisma";
 import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
 import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
@@ -55,13 +56,12 @@ export class PrismaNotificationsRepository implements NotificationsRepository {
       const existing = await tx.notification.findFirst({ where: { userId: input.userId, aggregationKey: input.aggregationKey, deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
       if (input.dedupeKey) {
         const ledger = await tx.notificationOutbox.findUnique({ where: { dedupeKey: input.dedupeKey } });
-        if (ledger?.state === NotificationOutboxState.PROCESSED && existing) return { row: toStored(existing), changed: false };
-        if (!ledger) await tx.notificationOutbox.create({ data: { eventType: input.type, aggregateType: "notification-aggregate", aggregateId: input.aggregationKey, recipientId: input.userId, payload: {}, dedupeKey: input.dedupeKey, state: NotificationOutboxState.PROCESSED, availableAt: input.createdAt, processedAt: input.createdAt } });
+        if (!ledger) throw new AppError(400, "Notification outbox event was not found.", "NOTIFICATION_EVENT_NOT_FOUND");
+        if (ledger.state === NotificationOutboxState.PROCESSED && existing) return { row: toStored(existing), changed: false };
       }
       const result = existing
         ? toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: input.title, body: input.body, actionUrl: input.actionUrl, metadata: input.metadata as Prisma.InputJsonValue, expiresAt: input.expiresAt, readAt: null } }))
         : toStored(await tx.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } }));
-      if (input.dedupeKey) await tx.notificationOutbox.update({ where: { dedupeKey: input.dedupeKey }, data: { state: NotificationOutboxState.PROCESSED, processedAt: input.createdAt } });
       return { row: result, changed: true };
     });
   }

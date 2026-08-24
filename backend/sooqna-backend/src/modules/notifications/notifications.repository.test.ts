@@ -49,7 +49,14 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
     expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ readAt: null, title: "new" }) }));
     expect(mockNotificationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ metadata: row.metadata }) }));
+    expect(mockOutboxUpdate).not.toHaveBeenCalled();
     expect(result.row.readAt).toBeNull();
+  });
+
+  it("rejects aggregate persistence without the producer-created outbox event", async () => {
+    mockNotificationFindFirst.mockResolvedValue(row); mockOutboxFindUnique.mockResolvedValue(null);
+    await expect(new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: "missing", aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt })).rejects.toMatchObject({ code: "NOTIFICATION_EVENT_NOT_FOUND" });
+    expect(mockNotificationUpdate).not.toHaveBeenCalled(); expect(mockNotificationCreate).not.toHaveBeenCalled();
   });
 
   it("uses the internal processed outbox ledger to make old aggregate replays no-ops", async () => {
