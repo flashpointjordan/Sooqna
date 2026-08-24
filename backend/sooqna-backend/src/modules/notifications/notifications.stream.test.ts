@@ -11,6 +11,8 @@ jest.mock("../../routes", () => {
 });
 jest.mock("./notifications.repository", () => ({ PrismaNotificationsRepository: class {} }));
 const mockAuth = { bearer: true, current: true, active: true, verified: true, uid: "user-a" };
+let mockCurrentGate: Promise<void> | undefined;
+let mockCurrentEntered: (() => void) | undefined;
 jest.mock("../../middleware/verifyFirebaseToken", () => ({ verifyFirebaseToken: (req: Request, res: Response, next: () => void): void => {
   if (!mockAuth.bearer) { res.status(401).json({ code: "UNAUTHORIZED" }); return; }
   (req as unknown as { authUser: unknown }).authUser = { uid: mockAuth.uid }; next();
@@ -18,6 +20,11 @@ jest.mock("../../middleware/verifyFirebaseToken", () => ({ verifyFirebaseToken: 
 jest.mock("../../middleware/authContext", () => ({
   requireCurrentUser: (req: Request, res: Response, next: () => void): void => {
     if (!mockAuth.current) { res.status(401).json({ code: "UNAUTHORIZED" }); return; }
+    if (mockCurrentGate) {
+      const gate = mockCurrentGate; mockCurrentEntered?.();
+      void gate.then(() => { (req as unknown as { currentUser: unknown }).currentUser = { firebaseUid: mockAuth.uid }; next(); });
+      return;
+    }
     (req as unknown as { currentUser: unknown }).currentUser = { firebaseUid: mockAuth.uid }; next();
   },
   requireActiveUser: (_req: Request, res: Response, next: () => void): void => {
@@ -29,7 +36,7 @@ jest.mock("../../middleware/requireVerifiedEmail", () => ({ requireVerifiedEmail
   if (!mockAuth.verified) { res.status(403).json({ code: "EMAIL_NOT_VERIFIED" }); return; }
   next();
 } }));
-import { createNotificationPublisher, NotificationBroker, setNotificationPublisher } from "./notifications.broker";
+import { createNotificationPublisher, getNotificationBroker, NotificationBroker, setNotificationPublisher } from "./notifications.broker";
 import { createNotificationStreamHandler, createProductionNotificationsService } from "./notifications.controller";
 import { createNotificationsRouter } from "./notifications.routes";
 
@@ -52,7 +59,7 @@ function streamResponse() {
 }
 
 describe("notification stream", () => {
-  afterEach(() => { jest.restoreAllMocks(); Object.assign(mockAuth, { bearer: true, current: true, active: true, verified: true, uid: "user-a" }); });
+  afterEach(() => { jest.restoreAllMocks(); mockCurrentGate = undefined; mockCurrentEntered = undefined; Object.assign(mockAuth, { bearer: true, current: true, active: true, verified: true, uid: "user-a" }); });
 
   test("sets SSE headers, sends retry and unref'd heartbeat without an initial body", async () => {
     const broker = new NotificationBroker(); const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
@@ -122,6 +129,28 @@ describe("notification stream", () => {
     const res = streamResponse();
     await expect(createNotificationStreamHandler(broker)(streamRequest("user-a"), res)).rejects.toMatchObject({ statusCode: 429, code: "TOO_MANY_STREAMS" });
     expect(res.writes).toEqual([]);
+  });
+
+  test("rejects a stream whose authentication completes after shutdown begins", async () => {
+    process.env.ENABLE_CATEGORIES_JSON_FALLBACK = "true";
+    jest.spyOn(console, "info").mockImplementation(() => undefined);
+    const { createServerLifecycle } = await import("../../server");
+    const worker = { start: jest.fn(), stop: jest.fn(async () => undefined) };
+    const lifecycle = createServerLifecycle({ worker: worker as never, listen: ((_port: number, ready: () => void) => { ready(); return { close: (done: () => void) => done() } as never; }) as never, disconnect: async () => undefined });
+    lifecycle.start();
+    const broker = getNotificationBroker(); const app = express(); app.use("/api/notifications", createNotificationsRouter(undefined, broker));
+    let release!: () => void; mockCurrentGate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { mockCurrentEntered = resolve; });
+    const pending = new Promise<request.Response>((resolve, reject) => request(app).get("/api/notifications/stream").end((error, response) => error ? reject(error) : resolve(response)));
+    await entered;
+    const stopping = lifecycle.stop(); release();
+    const response = await pending;
+    const stopped = await Promise.race([stopping.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30))]);
+
+    expect(response.status).toBe(503);
+    expect(response.text).not.toContain("retry: 5000");
+    expect(broker.activeCount()).toBe(0);
+    expect(stopped).toBe(true);
   });
 
   test("registers stream before parameterized notification ID routes", () => {

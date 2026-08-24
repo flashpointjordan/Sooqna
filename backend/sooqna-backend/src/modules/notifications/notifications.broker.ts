@@ -16,8 +16,10 @@ export type NotificationPublisher = (userId: string, notificationId: string, unr
 export class NotificationBroker {
   private readonly streams = new Map<string, Set<Response>>();
   private readonly cleanupHandlers = new WeakMap<Response, () => void>();
+  private closing = false;
 
   subscribe(userId: string, response: Response): () => void {
+    if (this.closing) throw new AppError(503, "Notification streaming is shutting down.", "SHUTTING_DOWN");
     const userStreams = this.streams.get(userId) ?? new Set<Response>();
     if (userStreams.size >= 3) throw new AppError(429, "Too many notification streams.", "TOO_MANY_STREAMS");
     userStreams.add(response);
@@ -50,9 +52,18 @@ export class NotificationBroker {
   }
 
   closeAll(): number {
+    this.closing = true;
     let closed = 0;
     for (const userId of [...this.streams.keys()]) closed += this.closeUser(userId);
     return closed;
+  }
+
+  beginShutdown(): number {
+    return this.closeAll();
+  }
+
+  isClosing(): boolean {
+    return this.closing;
   }
 
   activeCount(userId?: string): number {
