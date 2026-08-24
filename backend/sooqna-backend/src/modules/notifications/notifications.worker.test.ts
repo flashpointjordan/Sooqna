@@ -19,12 +19,12 @@ class FakeOutboxRepository implements NotificationOutboxRepository {
   constructor(rows: NotificationOutboxRecord[]) { this.rows = rows; }
   async recoverStaleProcessing(recoveredAt: Date, staleBefore: Date) {
     let recovered = 0;
-    for (const row of this.rows) if (row.state === NotificationOutboxState.PROCESSING && row.updatedAt < staleBefore) { row.state = NotificationOutboxState.FAILED; row.availableAt = recoveredAt; recovered++; }
+    for (const row of this.rows) if (row.state === NotificationOutboxState.PROCESSING && row.updatedAt < staleBefore) { row.state = row.attempts >= 8 ? NotificationOutboxState.DEAD : NotificationOutboxState.FAILED; row.availableAt = recoveredAt; recovered++; }
     return recovered;
   }
   async claimReady(limit: number, claimedAt: Date) {
     this.claims++;
-    return this.rows.filter((row) => (row.state === NotificationOutboxState.PENDING || row.state === NotificationOutboxState.FAILED) && row.availableAt <= claimedAt)
+    return this.rows.filter((row) => (row.state === NotificationOutboxState.PENDING || row.state === NotificationOutboxState.FAILED) && row.attempts < 8 && row.availableAt <= claimedAt)
       .slice(0, limit).map((row) => ({ ...row, state: row.state = NotificationOutboxState.PROCESSING, attempts: row.attempts = row.attempts + 1 }));
   }
   async markProcessed(id: string, _processedAt: Date) { this.marks.push({ id, state: "PROCESSED" }); const row = this.rows.find((candidate) => candidate.id === id)!; row.state = NotificationOutboxState.PROCESSED; }
@@ -44,6 +44,13 @@ describe("notification outbox worker", () => {
     expect(upsert.mock.calls[0][0]).toMatchObject({ where: { dedupeKey: "listing-1:approved" }, update: {}, create: { payload, attempts: 0, state: NotificationOutboxState.PENDING } });
     expect(result).toMatchObject({ dedupeKey: "listing-1:approved", payload });
     expect(upsert.mock.calls[0][0].create).not.toHaveProperty("title");
+  });
+
+  test("producer strips rendered and private extras before recording facts", async () => {
+    const upsert = jest.fn(async (query: { create: { payload: unknown } }) => ({ id: "outbox-1", ...query.create }));
+    const unsafePayload = { eventType: "LISTING_APPROVED", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", title: "عنوان مرسوم", body: "نسخة خاصة", token: "secret", email: "user@example.test", password: "secret", unknown: true };
+    await enqueueNotificationEvent({ payload: unsafePayload as never, aggregateType: "listing", aggregateId: "listing-1", dedupeKey: "listing-1:approved" }, { notificationOutbox: { upsert } } as never);
+    expect(upsert.mock.calls[0][0].create.payload).toEqual({ eventType: "LISTING_APPROVED", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop" });
   });
 
   test("persists and signals before marking a ready event processed", async () => {
@@ -105,6 +112,25 @@ describe("notification outbox worker", () => {
     expect(repo.rows[0].state).toBe(NotificationOutboxState.PROCESSED);
   });
 
+  test("uses an hourly aggregate key for saved-search matches", async () => {
+    const repo = new FakeOutboxRepository([event({ eventType: NotificationType.SAVED_SEARCH_MATCHES, aggregateType: "savedSearch", aggregateId: "search-1", payload: { eventType: "SAVED_SEARCH_MATCHES", recipientId: "user-1", savedSearchId: "search-1", savedSearchName: "Laptops", query: {}, matchingListingIds: ["listing-1"], totalCount: 1 } })]);
+    const notifications = service();
+    const worker = createNotificationWorker({ repository: repo, service: notifications, now: () => now });
+    await worker.runOnce();
+    expect(notifications.persistFromEvent).toHaveBeenCalledWith(NotificationType.SAVED_SEARCH_MATCHES, expect.anything(), { dedupeKey: "listing-1:approved", aggregationKey: "SAVED_SEARCH_MATCHES:user-1:search-1:2026-08-24T10" });
+  });
+
+  test("re-publishes an aggregate notification after signal failure before processing it", async () => {
+    const repo = new FakeOutboxRepository([event({ eventType: NotificationType.LISTING_FAVORITED_AGGREGATE, payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", favoriteCount: 2 } })]);
+    const notifications = service();
+    notifications.persistFromEvent.mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: true }).mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: false });
+    const publishSignal = jest.fn().mockRejectedValueOnce(new Error("broker offline")).mockResolvedValueOnce(undefined);
+    const worker = createNotificationWorker({ repository: repo, service: notifications, now: () => now, publishSignal, jitter: () => 0 });
+    await worker.runOnce(); repo.rows[0].availableAt = now; await worker.runOnce();
+    expect(publishSignal).toHaveBeenCalledTimes(2);
+    expect(repo.rows[0].state).toBe(NotificationOutboxState.PROCESSED);
+  });
+
   test("recovers stale processing rows before claiming and awaits active work on stop", async () => {
     const stale = event({ id: "stale", state: NotificationOutboxState.PROCESSING, updatedAt: new Date(now.getTime() - 6 * 60_000) });
     const repo = new FakeOutboxRepository([stale]); let resolve!: () => void;
@@ -115,6 +141,23 @@ describe("notification outbox worker", () => {
     expect(repo.claims).toBe(1);
     resolve(); await run; await stopping;
     expect(repo.rows[0].state).toBe(NotificationOutboxState.PROCESSED);
+  });
+
+  test("finishes every row already claimed when stop begins", async () => {
+    const repo = new FakeOutboxRepository([event({ id: "one" }), event({ id: "two" })]); let resolveFirst!: () => void;
+    const worker = createNotificationWorker({ repository: repo, service: service(), now: () => now, processEvent: (row) => row.id === "one" ? new Promise<void>((done) => { resolveFirst = done; }) : Promise.resolve() });
+    const run = worker.runOnce(); await new Promise<void>((done) => setImmediate(done)); const stopping = worker.stop();
+    resolveFirst(); await run; await stopping;
+    expect(repo.rows.map((row) => row.state)).toEqual([NotificationOutboxState.PROCESSED, NotificationOutboxState.PROCESSED]);
+  });
+
+  test("does not process a stale crashed eighth-attempt row", async () => {
+    const repo = new FakeOutboxRepository([event({ attempts: 8, state: NotificationOutboxState.PROCESSING, updatedAt: new Date(now.getTime() - 6 * 60_000) })]);
+    const processEvent = jest.fn(async () => undefined);
+    const worker = createNotificationWorker({ repository: repo, service: service(), now: () => now, processEvent });
+    await worker.runOnce();
+    expect(processEvent).not.toHaveBeenCalled();
+    expect(repo.rows[0].state).toBe(NotificationOutboxState.DEAD);
   });
 
   test("unrefs its poll timer and stops future claims", async () => {

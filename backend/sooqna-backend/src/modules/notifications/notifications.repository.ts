@@ -14,11 +14,15 @@ function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput 
 
 export class PrismaNotificationsRepository implements NotificationsRepository, NotificationOutboxRepository {
   async recoverStaleProcessing(now: Date, staleBefore: Date): Promise<number> {
+    const dead = await prisma.notificationOutbox.updateMany({
+      where: { state: NotificationOutboxState.PROCESSING, attempts: { gte: 8 }, updatedAt: { lt: staleBefore } },
+      data: { state: NotificationOutboxState.DEAD },
+    });
     const result = await prisma.notificationOutbox.updateMany({
-      where: { state: NotificationOutboxState.PROCESSING, updatedAt: { lt: staleBefore } },
+      where: { state: NotificationOutboxState.PROCESSING, attempts: { lt: 8 }, updatedAt: { lt: staleBefore } },
       data: { state: NotificationOutboxState.FAILED, availableAt: now },
     });
-    return result.count;
+    return dead.count + result.count;
   }
   async claimReady(limit: number, now: Date): Promise<NotificationOutboxRecord[]> {
     const bounded = Math.max(1, Math.min(limit, 200));
@@ -30,12 +34,13 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
         FROM "NotificationOutbox"
         WHERE "state" IN ('PENDING'::"NotificationOutboxState", 'FAILED'::"NotificationOutboxState")
           AND "availableAt" <= ${now}
+          AND "attempts" < 8
         ORDER BY "availableAt" ASC, "createdAt" ASC, "id" ASC
         LIMIT ${bounded}
         FOR UPDATE SKIP LOCKED
       `);
       if (rows.length === 0) return [];
-      await tx.notificationOutbox.updateMany({ where: { id: { in: rows.map((row) => row.id) }, state: { in: [NotificationOutboxState.PENDING, NotificationOutboxState.FAILED] } }, data: { state: NotificationOutboxState.PROCESSING, attempts: { increment: 1 } } });
+      await tx.notificationOutbox.updateMany({ where: { id: { in: rows.map((row) => row.id) }, state: { in: [NotificationOutboxState.PENDING, NotificationOutboxState.FAILED] }, attempts: { lt: 8 } }, data: { state: NotificationOutboxState.PROCESSING, attempts: { increment: 1 } } });
       return rows.map((row) => ({ ...row, state: NotificationOutboxState.PROCESSING, attempts: row.attempts + 1 }));
     });
   }

@@ -1,5 +1,6 @@
 import { NotificationOutboxState, NotificationType } from "@prisma/client";
 import { AppError } from "../../shared/errors/appError";
+import { projectNotificationEventPayload } from "./notifications.producer";
 import type { NotificationEventPayload } from "./notifications.types";
 
 export type NotificationOutboxRecord = {
@@ -53,11 +54,11 @@ export function createNotificationWorker(deps: WorkerDeps) {
     if (!deps.service.persistFromEvent) throw new Error("Notification worker persistence service is not configured.");
     const result = await deps.service.persistFromEvent(row.eventType, payload, {
       dedupeKey: row.dedupeKey,
-      ...(isAggregateEvent(row.eventType) ? { aggregationKey: `${row.eventType}:${row.recipientId}:${row.aggregateType}:${row.aggregateId}` } : {}),
+      ...(isAggregateEvent(row.eventType) ? { aggregationKey: aggregateKey(row, now()) } : {}),
     });
     // A non-aggregate row can be retried after persistence succeeded but its
     // signal failed. Re-publishing that id is safe and prevents losing SSE.
-    if (!result.row || (isAggregateEvent(row.eventType) && !result.changed)) return;
+    if (!result.row || (isAggregateEvent(row.eventType) && !result.changed && row.attempts <= 1)) return;
     const unreadCount = deps.service.unreadCount ? await deps.service.unreadCount(result.row.userId) : 0;
     if (deps.publishSignal) await deps.publishSignal(result.row.userId, result.row.id, unreadCount);
     else if (deps.service.signalPersisted) await deps.service.signalPersisted(result.row.userId, result.row.id, unreadCount);
@@ -69,7 +70,6 @@ export function createNotificationWorker(deps: WorkerDeps) {
     if (stopping) return;
     const rows = await deps.repository.claimReady(batchSize, now());
     for (const row of rows) {
-      if (stopping) return;
       try {
         await process(row);
         await deps.repository.markProcessed(row.id, now());
@@ -106,7 +106,12 @@ export function createNotificationWorker(deps: WorkerDeps) {
   };
 }
 
-function isAggregateEvent(type: NotificationType): boolean { return type === NotificationType.LISTING_FAVORITED_AGGREGATE; }
+function isAggregateEvent(type: NotificationType): boolean { return type === NotificationType.LISTING_FAVORITED_AGGREGATE || type === NotificationType.SAVED_SEARCH_MATCHES; }
+function aggregateKey(row: NotificationOutboxRecord, at: Date): string {
+  const raw = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload) ? (row.payload as Record<string, unknown>)._aggregationKey : undefined;
+  if (raw !== undefined && (typeof raw !== "string" || raw.length === 0 || raw.length > 160 || !/^[A-Za-z0-9:_-]+$/.test(raw))) throw new AppError(400, "Invalid notification aggregation key.", "VALIDATION_ERROR");
+  return `${raw ?? `${row.eventType}:${row.recipientId}:${row.aggregateId}`}:${at.toISOString().slice(0, 13)}`;
+}
 function errorMessage(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 500); }
 
 function parsePayload(value: unknown): NotificationEventPayload {
@@ -126,7 +131,7 @@ function parsePayload(value: unknown): NotificationEventPayload {
   if (payload.eventType === NotificationType.REVIEW_RECEIVED && typeof payload.rating !== "number") throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
   if (payload.eventType === NotificationType.SAVED_SEARCH_MATCHES && (!Array.isArray(payload.matchingListingIds) || typeof payload.totalCount !== "number" || !payload.query || typeof payload.query !== "object" || Array.isArray(payload.query))) throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
   if (payload.eventType === NotificationType.SYSTEM_ANNOUNCEMENT && payload.actionUrl !== undefined && payload.actionUrl !== null && typeof payload.actionUrl !== "string") throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");
-  return payload as unknown as NotificationEventPayload;
+  return projectNotificationEventPayload(payload);
 }
 
 if (require.main === module) {
