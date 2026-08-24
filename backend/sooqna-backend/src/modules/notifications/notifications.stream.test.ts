@@ -40,12 +40,13 @@ function streamRequest(userId = "user-a") {
 }
 
 function streamResponse() {
-  const res = new EventEmitter() as Response & { headers: Record<string, string>; writes: string[]; flushHeaders: jest.Mock; write: jest.Mock };
+  const res = new EventEmitter() as Response & { headers: Record<string, string>; writes: string[]; flushHeaders: jest.Mock; write: jest.Mock; end: jest.Mock };
   Object.assign(res, {
     headers: {}, writes: [],
     setHeader(name: string, value: string) { res.headers[name] = value; },
     flushHeaders: jest.fn(),
     write: jest.fn((value: string) => { res.writes.push(value); return true; }),
+    end: jest.fn(),
   });
   return res;
 }
@@ -74,7 +75,7 @@ describe("notification stream", () => {
     jest.spyOn(global, "setInterval").mockReturnValue(timer); const clear = jest.spyOn(global, "clearInterval").mockImplementation(() => undefined);
     const req = streamRequest("user-a"); const res = streamResponse();
     await createNotificationStreamHandler(broker)(req, res);
-    broker.publish("user-b", { event: "notification", id: "other", unreadCount: 1, version: 1 });
+    broker.publish("user-b", { event: "notification.changed", notificationId: "other", unreadCount: 1, version: 1 });
     expect(res.writes).toEqual(["retry: 5000\n\n"]);
     req.emit("aborted");
     expect(broker.activeCount("user-a")).toBe(0);
@@ -100,6 +101,19 @@ describe("notification stream", () => {
     const req = new EventEmitter() as Request;
     (req as unknown as { authUser: unknown }).authUser = { uid: "attacker-controlled" };
     await expect(createNotificationStreamHandler(new NotificationBroker())(req, streamResponse())).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  test("ends and cleans up a stream when a heartbeat is backpressured", async () => {
+    const broker = new NotificationBroker(); const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
+    const interval = jest.spyOn(global, "setInterval").mockReturnValue(timer); const clear = jest.spyOn(global, "clearInterval").mockImplementation(() => undefined);
+    const req = streamRequest(); const res = streamResponse(); res.write.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    await createNotificationStreamHandler(broker)(req, res);
+
+    (interval.mock.calls[0][0] as () => void)();
+
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(broker.activeCount("user-a")).toBe(0);
   });
 
   test("rejects a fourth stream before emitting SSE headers", async () => {
@@ -135,10 +149,15 @@ describe("notification stream", () => {
       options = rateLimit.mock.calls.map(([value]) => value);
     });
     const stream = options.find((value) => value.max === 30 && value.windowMs === 5 * 60 * 1000);
-    const writes = options.find((value) => value.max === 60 && value.windowMs === 5 * 60 * 1000 && value.skip);
     expect(stream).toBeDefined();
-    expect(writes).toBeDefined();
-    if (!writes?.skip) throw new Error("notification write limiter is not configured");
+  });
+
+  test("keys notification writes by authenticated UID with an IP fallback", () => {
+    const router = createNotificationsRouter(undefined, new NotificationBroker());
+    const writes = router.stack.map((layer) => (layer.handle as unknown as { options?: { max?: number; keyGenerator?: (req: { currentUser?: { firebaseUid?: string }; ip?: string }) => string; skip?: (req: { method: string }) => boolean } }).options).find((options) => options?.max === 60);
+    if (!writes?.keyGenerator || !writes.skip) throw new Error("notification write limiter is not configured");
+    expect(writes.keyGenerator({ currentUser: { firebaseUid: "user-a" }, ip: "198.51.100.10" })).toBe("user-a");
+    expect(writes.keyGenerator({ ip: "198.51.100.10" })).toBe("198.51.100.10");
     expect(writes.skip({ method: "GET" })).toBe(true);
     expect(writes.skip({ method: "HEAD" })).toBe(true);
     expect(writes.skip({ method: "OPTIONS" })).toBe(true);
@@ -153,6 +172,15 @@ describe("notification stream", () => {
 
     await service.markRead("user-a", "notification-1");
 
-    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"id":"notification-1","unreadCount":2,"version":1'));
+    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"event":"notification.changed","notificationId":"notification-1","unreadCount":2,"version":1'));
+  });
+
+  test("keeps a persisted REST mutation successful when async signal publishing fails", async () => {
+    const warn = jest.fn(); const publisher = jest.fn(async () => { throw new Error("broker unavailable"); });
+    const row = { id: "notification-1", userId: "user-a", type: "LISTING_APPROVED", category: "LISTINGS", title: "title", body: "body", actionUrl: null, entityType: null, entityId: null, metadata: {}, dedupeKey: null, aggregationKey: null, readAt: null, deletedAt: null, expiresAt: new Date(), createdAt: new Date(), updatedAt: new Date() };
+    const service = createProductionNotificationsService({ markReadOwned: async () => ({ row, changed: true }), countUnread: async () => 2 } as never, { publisher, logger: { warn } });
+
+    await expect(service.markRead("user-a", "notification-1")).resolves.toMatchObject({ id: "notification-1" });
+    expect(warn).toHaveBeenCalledWith("notification_signal_publish_failed", expect.objectContaining({ notificationId: "notification-1", error: "broker unavailable" }));
   });
 });

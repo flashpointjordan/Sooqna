@@ -71,19 +71,6 @@ app.use(
   })
 );
 
-app.use(
-  "/api/notifications",
-  rateLimit({
-    windowMs: 5 * 60 * 1000,
-    max: 60,
-    standardHeaders: true,
-    legacyHeaders: false,
-    skip: (req) => req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS",
-    message: { success: false, code: "RATE_LIMITED", message: "Too many notification updates." },
-    handler: createRateLimitHandler("notifications-write", { success: false, code: "RATE_LIMITED", message: "Too many notification updates." }),
-  })
-);
-
 // Auth limiter — 20 req / 15 min per IP (brute-force protection)
 app.use(
   "/api/auth",

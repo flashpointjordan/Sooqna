@@ -4,11 +4,18 @@ import { sendSuccess } from "../../shared/contracts/api";
 import { PrismaNotificationsRepository } from "./notifications.repository";
 import { notificationListQuerySchema } from "./notifications.schemas";
 import { NotificationsService, type NotificationsRepository } from "./notifications.service";
-import { getNotificationBroker, NotificationBroker, publishNotificationSignal } from "./notifications.broker";
+import { getNotificationBroker, type NotificationPublisher, NotificationBroker, publishNotificationSignal } from "./notifications.broker";
+import { logger } from "../../config/logger";
 
 export type NotificationsControllerService = Pick<NotificationsService, "list" | "unreadCount" | "markRead" | "markAllRead" | "delete" | "getPreferences" | "updatePreferences">;
-export function createProductionNotificationsService(repository: NotificationsRepository): NotificationsService {
-  return new NotificationsService(repository, { publishSignal: publishNotificationSignal });
+type ProductionServiceOptions = { publisher?: NotificationPublisher; logger?: Pick<typeof logger, "warn"> };
+export function createProductionNotificationsService(repository: NotificationsRepository, options: ProductionServiceOptions = {}): NotificationsService {
+  const publisher = options.publisher ?? publishNotificationSignal;
+  const productionLogger = options.logger ?? logger;
+  return new NotificationsService(repository, { publishSignal: async (userId, notificationId, unreadCount) => {
+    try { await publisher(userId, notificationId, unreadCount); }
+    catch (error) { productionLogger.warn("notification_signal_publish_failed", { notificationId, error: error instanceof Error ? error.message : String(error) }); }
+  } });
 }
 const service = createProductionNotificationsService(new PrismaNotificationsRepository());
 
@@ -32,7 +39,7 @@ export function createNotificationsController(service: NotificationsControllerSe
 }
 export const { listNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead, deleteNotification, getNotificationPreferences, updateNotificationPreferences } = createNotificationsController(service);
 
-export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount">) {
+export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount" | "registerCleanup">) {
   return async (req: Request, res: Response): Promise<void> => {
     const uid = req.currentUser?.firebaseUid;
     if (!uid) throw new AppError(401, "Unauthorized.", "UNAUTHORIZED");
@@ -42,7 +49,7 @@ export function createNotificationStreamHandler(broker: Pick<NotificationBroker,
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
-    res.write("retry: 5000\n\n");
+    if (!res.write("retry: 5000\n\n")) { res.end(); return; }
     const unsubscribe = broker.subscribe(uid, res);
     let cleaned = false;
     let heartbeat: NodeJS.Timeout | undefined;
@@ -58,8 +65,9 @@ export function createNotificationStreamHandler(broker: Pick<NotificationBroker,
       req.off("close", onRequestClose);
       res.off("close", onResponseClose);
     };
+    broker.registerCleanup(res, cleanup);
     heartbeat = setInterval(() => {
-      try { res.write(": heartbeat\n\n"); }
+      try { if (!res.write(": heartbeat\n\n")) { res.end(); cleanup(); } }
       catch { cleanup(); }
     }, 25_000);
     heartbeat.unref();
