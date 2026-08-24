@@ -53,6 +53,6 @@ export async function refreshMessagePollCycle(input: {
   const unreadCount = summary.byConversation[input.conversationId] ?? 0;
   if (unreadCount <= 0) return;
 
-  await input.markRead(input.conversationId);
-  input.applyReadState(input.conversationId, unreadCount);
+  const updatedCount = await input.markRead(input.conversationId);
+  input.applyReadState(input.conversationId, updatedCount);
 }

@@ -18,8 +18,14 @@ import {
 import type { Conversation, Message } from "@/types/message";
 import { ConversationList } from "./ConversationList";
 import { ChatPanel } from "./ChatPanel";
+import {
+  canPollMessages,
+  createSingleFlightRunner,
+  getRateLimitBlockedUntil,
+  refreshMessagePollCycle,
+} from "./messagePolling";
 
-const POLL_INTERVAL_MS = 20_000;
+const POLL_INTERVAL_MS = 30_000;
 
 export function MessagesWorkspace({ initialConversationId = "" }: { initialConversationId?: string }) {
   const { currentUser } = useAuth();
@@ -38,9 +44,13 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
   const [emailUnverified, setEmailUnverified] = useState(false);
 
   const lastMessageCountRef = useRef(0);
+  const blockedUntilRef = useRef(0);
+  const singleFlightRef = useRef(createSingleFlightRunner());
 
   const refreshInbox = useCallback(async () => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      return { totalUnread: 0, byConversation: {} };
+    }
     setInboxLoading(true);
     try {
       const [conversations, unreadSummary] = await Promise.all([
@@ -49,8 +59,10 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
       ]);
       setInbox(conversations);
       setUnreadTotal(unreadSummary.totalUnread);
+      return unreadSummary;
     } catch (err) {
       if (isEmailNotVerified(err)) setEmailUnverified(true);
+      throw err;
     } finally {
       setInboxLoading(false);
     }
@@ -69,16 +81,64 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
         setMessages(messagesData);
         lastMessageCountRef.current = messagesData.length;
       }
-      await markConversationRead(targetId);
-      await refreshInbox();
     } catch (err) {
       if (!silent) {
         setError(err instanceof Error ? err.message : "فشل تحميل المحادثة.");
       }
+      throw err;
     } finally {
       if (!silent) setChatLoading(false);
     }
-  }, [refreshInbox]);
+  }, []);
+
+  const applyReadState = useCallback((targetId: string, updatedCount: number) => {
+    setUnreadTotal((current) => Math.max(0, current - updatedCount));
+    setInbox((current) =>
+      current.map((item) =>
+        item.id === targetId ? { ...item, unreadCount: 0 } : item
+      )
+    );
+  }, []);
+
+  const runRefreshCycle = useCallback(async (
+    targetId: string,
+    silent = true
+  ): Promise<boolean> => {
+    if (!currentUser) return false;
+
+    const now = Date.now();
+    const visibilityState = typeof document === "undefined"
+      ? "visible"
+      : document.visibilityState;
+    if (!canPollMessages({ visibilityState, blockedUntil: blockedUntilRef.current, now })) {
+      if (!silent && now < blockedUntilRef.current) {
+        const seconds = Math.ceil((blockedUntilRef.current - now) / 1_000);
+        setError(`طلبات كثيرة. يمكنك المحاولة بعد ${seconds} ثانية.`);
+      }
+      return false;
+    }
+
+    try {
+      return await singleFlightRef.current(() =>
+        refreshMessagePollCycle({
+          conversationId: targetId,
+          refreshInbox,
+          refreshConversation: (id) => refreshConversationData(id, silent),
+          markRead: markConversationRead,
+          applyReadState,
+        })
+      );
+    } catch (err) {
+      const blockedUntil = getRateLimitBlockedUntil(err, Date.now());
+      if (blockedUntil !== null) {
+        blockedUntilRef.current = blockedUntil;
+        setError(err instanceof Error ? err.message : "طلبات كثيرة. انتظر قليلاً ثم حاول مرة أخرى.");
+      } else if (!silent) {
+        setError(err instanceof Error ? err.message : "فشل تحديث الرسائل.");
+      }
+      return false;
+    }
+  }, [applyReadState, currentUser, refreshConversationData, refreshInbox]);
 
   useEffect(() => {
     if (!initialConversationId) return;
@@ -87,33 +147,31 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
   }, [initialConversationId]);
 
   useEffect(() => {
-    if (!currentUser) return;
-    void refreshInbox();
-  }, [currentUser, refreshInbox]);
-
-  useEffect(() => {
     void flushPendingMessages().then((count) => {
-      if (count > 0) void refreshInbox();
+      if (count > 0) void runRefreshCycle("", true);
     });
-  }, [refreshInbox]);
+  }, [runRefreshCycle]);
 
   useEffect(() => {
-    if (!conversationId) return;
+    if (!currentUser) return;
     lastMessageCountRef.current = 0;
-    void refreshConversationData(conversationId);
-  }, [conversationId, refreshConversationData]);
+    void runRefreshCycle(conversationId, false);
+  }, [conversationId, currentUser, runRefreshCycle]);
 
   // Polling
   useEffect(() => {
     if (!currentUser) return;
-    const interval = setInterval(() => {
-      void refreshInbox();
-      if (conversationId) {
-        void refreshConversationData(conversationId, true);
-      }
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, [currentUser, conversationId, refreshInbox, refreshConversationData]);
+    const refresh = () => void runRefreshCycle(conversationId, true);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const interval = window.setInterval(refresh, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [currentUser, conversationId, runRefreshCycle]);
 
   // Mobile back button support
   useEffect(() => {
@@ -163,7 +221,7 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
         text,
       });
       lastMessageCountRef.current = 0;
-      await refreshConversationData(conversationId.trim(), true);
+      await runRefreshCycle(conversationId.trim(), true);
     } catch (err) {
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         enqueuePendingMessage(conversationId.trim(), {
@@ -202,7 +260,7 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
               totalUnread={unreadTotal}
               loading={inboxLoading}
               onSelectConversation={handleSelectConversation}
-              onRefresh={() => void refreshInbox()}
+              onRefresh={() => void runRefreshCycle(conversationId, false)}
             />
           </div>
           <div className="flex-1">
@@ -227,7 +285,7 @@ export function MessagesWorkspace({ initialConversationId = "" }: { initialConve
               totalUnread={unreadTotal}
               loading={inboxLoading}
               onSelectConversation={handleSelectConversation}
-              onRefresh={() => void refreshInbox()}
+              onRefresh={() => void runRefreshCycle(conversationId, false)}
             />
           ) : (
             <ChatPanel
