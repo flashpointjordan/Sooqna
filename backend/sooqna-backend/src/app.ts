@@ -56,6 +56,34 @@ app.use(
   })
 );
 
+// Stream attempts are bounded separately from normal REST traffic. An open
+// SSE connection consumes one attempt and is not treated as repeated requests.
+app.use(
+  "/api/notifications/stream",
+  rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.ip ?? "unknown",
+    message: { success: false, code: "RATE_LIMITED", message: "Too many notification stream attempts." },
+    handler: createRateLimitHandler("notifications-stream", { success: false, code: "RATE_LIMITED", message: "Too many notification stream attempts." }),
+  })
+);
+
+app.use(
+  "/api/notifications",
+  rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS",
+    message: { success: false, code: "RATE_LIMITED", message: "Too many notification updates." },
+    handler: createRateLimitHandler("notifications-write", { success: false, code: "RATE_LIMITED", message: "Too many notification updates." }),
+  })
+);
+
 // Auth limiter — 20 req / 15 min per IP (brute-force protection)
 app.use(
   "/api/auth",

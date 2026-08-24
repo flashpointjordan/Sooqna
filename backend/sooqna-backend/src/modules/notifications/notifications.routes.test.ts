@@ -56,7 +56,7 @@ describe("notification REST route contract", () => {
 
   it("registers fixed routes before parameterized notification IDs", () => {
     const router = createNotificationsRouter(createNotificationsController(fakeService)); const paths = router.stack.map((layer) => layer.route?.path).filter(Boolean);
-    expect(paths).toEqual(["/", "/unread-count", "/read-all", "/preferences", "/preferences", "/:notificationId/read", "/:notificationId"]);
+    expect(paths).toEqual(["/", "/unread-count", "/stream", "/read-all", "/preferences", "/preferences", "/:notificationId/read", "/:notificationId"]);
     expect(router.stack.slice(0, 4).map((layer) => layer.handle.name)).toEqual(["verifyFirebaseToken", "requireCurrentUser", "requireActiveUser", "requireVerifiedEmail"]);
   });
 
