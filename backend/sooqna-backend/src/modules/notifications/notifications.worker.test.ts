@@ -18,9 +18,9 @@ class FakeOutboxRepository implements NotificationOutboxRepository {
   claims = 0;
   constructor(rows: NotificationOutboxRecord[]) { this.rows = rows; }
   async recoverStaleProcessing(recoveredAt: Date, staleBefore: Date) {
-    let recovered = 0;
-    for (const row of this.rows) if (row.state === NotificationOutboxState.PROCESSING && row.updatedAt < staleBefore) { row.state = row.attempts >= 8 ? NotificationOutboxState.DEAD : NotificationOutboxState.FAILED; row.availableAt = recoveredAt; recovered++; }
-    return recovered;
+    let recovered = 0; const dead: Array<{ id: string; attempts: number }> = [];
+    for (const row of this.rows) if (row.state === NotificationOutboxState.PROCESSING && row.updatedAt < staleBefore) { row.state = row.attempts >= 8 ? NotificationOutboxState.DEAD : NotificationOutboxState.FAILED; row.availableAt = recoveredAt; recovered++; if (row.state === NotificationOutboxState.DEAD) dead.push({ id: row.id, attempts: row.attempts }); }
+    return { recovered, dead };
   }
   async claimReady(limit: number, claimedAt: Date) {
     this.claims++;
@@ -120,6 +120,22 @@ describe("notification outbox worker", () => {
     expect(notifications.persistFromEvent).toHaveBeenCalledWith(NotificationType.SAVED_SEARCH_MATCHES, expect.anything(), { dedupeKey: "listing-1:approved", aggregationKey: "SAVED_SEARCH_MATCHES:user-1:search-1:2026-08-24T10" });
   });
 
+  test("keeps an aggregate key in its creation-hour across delayed retry", async () => {
+    const createdAt = new Date("2026-08-24T09:59:00.000Z"); let processingNow = new Date("2026-08-24T10:01:00.000Z");
+    const repo = new FakeOutboxRepository([event({ eventType: NotificationType.SAVED_SEARCH_MATCHES, aggregateType: "savedSearch", aggregateId: "search-1", createdAt, payload: { eventType: "SAVED_SEARCH_MATCHES", recipientId: "user-1", savedSearchId: "search-1", savedSearchName: "Laptops", query: {}, matchingListingIds: ["listing-1"], totalCount: 1 } })]);
+    const notifications = service(); notifications.persistFromEvent.mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: true }).mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: false });
+    const publishSignal = jest.fn().mockRejectedValueOnce(new Error("broker offline")).mockResolvedValueOnce(undefined);
+    const worker = createNotificationWorker({ repository: repo, service: notifications, now: () => processingNow, publishSignal, jitter: () => 0 });
+    await worker.runOnce(); repo.rows[0].availableAt = processingNow; processingNow = new Date("2026-08-24T11:01:00.000Z"); await worker.runOnce();
+    expect(notifications.persistFromEvent.mock.calls.map((call) => (call[2] as { aggregationKey?: string } | undefined)?.aggregationKey)).toEqual(["SAVED_SEARCH_MATCHES:user-1:search-1:2026-08-24T09", "SAVED_SEARCH_MATCHES:user-1:search-1:2026-08-24T09"]);
+  });
+
+  test("preserves an explicit complete aggregate key", async () => {
+    const repo = new FakeOutboxRepository([event({ eventType: NotificationType.SAVED_SEARCH_MATCHES, aggregateType: "savedSearch", aggregateId: "search-1", createdAt: new Date("2026-08-24T09:59:00.000Z"), payload: { eventType: "SAVED_SEARCH_MATCHES", recipientId: "user-1", savedSearchId: "search-1", savedSearchName: "Laptops", query: {}, matchingListingIds: ["listing-1"], totalCount: 1, _aggregationKey: "campaign-7:2026-08-24T08" } })]);
+    const notifications = service(); await createNotificationWorker({ repository: repo, service: notifications, now: () => new Date("2026-08-24T10:01:00.000Z") }).runOnce();
+    expect((notifications.persistFromEvent.mock.calls[0][2] as { aggregationKey?: string }).aggregationKey).toBe("campaign-7:2026-08-24T08");
+  });
+
   test("re-publishes an aggregate notification after signal failure before processing it", async () => {
     const repo = new FakeOutboxRepository([event({ eventType: NotificationType.LISTING_FAVORITED_AGGREGATE, payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", favoriteCount: 2 } })]);
     const notifications = service();
@@ -158,6 +174,13 @@ describe("notification outbox worker", () => {
     await worker.runOnce();
     expect(processEvent).not.toHaveBeenCalled();
     expect(repo.rows[0].state).toBe(NotificationOutboxState.DEAD);
+  });
+
+  test("logs a structured dead-letter event when stale eighth attempt is recovered", async () => {
+    const repo = new FakeOutboxRepository([event({ id: "dead-row", attempts: 8, state: NotificationOutboxState.PROCESSING, updatedAt: new Date(now.getTime() - 6 * 60_000) })]);
+    const logger = { error: jest.fn() };
+    await createNotificationWorker({ repository: repo, service: service(), now: () => now, logger }).runOnce();
+    expect(logger.error).toHaveBeenCalledWith("Notification outbox event is dead.", { outboxId: "dead-row", attempts: 8, reason: "stale_processing" });
   });
 
   test("unrefs its poll timer and stops future claims", async () => {
