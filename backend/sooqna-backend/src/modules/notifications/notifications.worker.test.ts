@@ -1,6 +1,6 @@
 import { NotificationOutboxState, NotificationType } from "@prisma/client";
 import { enqueueNotificationEvent } from "./notifications.producer";
-import { createNotificationWorker, type NotificationOutboxRecord, type NotificationOutboxRepository } from "./notifications.worker";
+import { createNotificationWorker, runNotificationWorkerOnce, type NotificationOutboxRecord, type NotificationOutboxRepository } from "./notifications.worker";
 
 const now = new Date("2026-08-24T10:00:00.000Z");
 
@@ -8,7 +8,7 @@ function event(overrides: Partial<NotificationOutboxRecord> = {}): NotificationO
   return {
     id: "outbox-1", eventType: NotificationType.LISTING_APPROVED, aggregateType: "listing", aggregateId: "listing-1", recipientId: "user-1",
     payload: { eventType: "LISTING_APPROVED", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop" }, dedupeKey: "listing-1:approved",
-    state: NotificationOutboxState.PENDING, attempts: 0, availableAt: now, processedAt: null, lastError: null, createdAt: now, updatedAt: now, ...overrides,
+    state: NotificationOutboxState.PENDING, attempts: 0, claimAttempt: 0, availableAt: now, processedAt: null, lastError: null, createdAt: now, updatedAt: now, ...overrides,
   };
 }
 
@@ -25,10 +25,10 @@ class FakeOutboxRepository implements NotificationOutboxRepository {
   async claimReady(limit: number, claimedAt: Date) {
     this.claims++;
     return this.rows.filter((row) => (row.state === NotificationOutboxState.PENDING || row.state === NotificationOutboxState.FAILED) && row.attempts < 8 && row.availableAt <= claimedAt)
-      .slice(0, limit).map((row) => ({ ...row, state: row.state = NotificationOutboxState.PROCESSING, attempts: row.attempts = row.attempts + 1 }));
+      .slice(0, limit).map((row) => ({ ...row, state: row.state = NotificationOutboxState.PROCESSING, attempts: row.attempts = row.attempts + 1, claimAttempt: row.attempts }));
   }
-  async markProcessed(id: string, _processedAt: Date) { this.marks.push({ id, state: "PROCESSED" }); const row = this.rows.find((candidate) => candidate.id === id)!; row.state = NotificationOutboxState.PROCESSED; }
-  async markFailure(id: string, error: string, availableAt: Date, _failedAt: Date) { this.marks.push({ id, state: "FAILED", error, availableAt }); const row = this.rows.find((candidate) => candidate.id === id)!; row.lastError = error; row.availableAt = availableAt; row.state = row.attempts >= 8 ? NotificationOutboxState.DEAD : NotificationOutboxState.FAILED; return row.state; }
+  async markProcessed(id: string, claimAttempt: number, _processedAt: Date) { const row = this.rows.find((candidate) => candidate.id === id)!; if (row.state !== NotificationOutboxState.PROCESSING || row.attempts !== claimAttempt) return false; this.marks.push({ id, state: "PROCESSED" }); row.state = NotificationOutboxState.PROCESSED; return true; }
+  async markFailure(id: string, claimAttempt: number, error: string, availableAt: Date, _failedAt: Date) { const row = this.rows.find((candidate) => candidate.id === id)!; if (row.state !== NotificationOutboxState.PROCESSING || row.attempts !== claimAttempt) return row.state; this.marks.push({ id, state: "FAILED", error, availableAt }); row.lastError = error; row.availableAt = availableAt; row.state = row.attempts >= 8 ? NotificationOutboxState.DEAD : NotificationOutboxState.FAILED; return row.state; }
 }
 
 function service() {
@@ -196,6 +196,35 @@ describe("notification outbox worker", () => {
     setIntervalSpy.mockRestore(); clearIntervalSpy.mockRestore();
   });
 
+  test("catches scheduler errors and permits the next scheduled claim", async () => {
+    let tick!: () => void; const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
+    const repository: NotificationOutboxRepository = {
+      recoverStaleProcessing: jest.fn().mockRejectedValueOnce(new Error("database unavailable")).mockResolvedValue({ recovered: 0, dead: [] }),
+      claimReady: jest.fn(async () => []), markProcessed: jest.fn(async () => false), markFailure: jest.fn(async () => NotificationOutboxState.FAILED),
+    };
+    const logger = { error: jest.fn() };
+    const interval = jest.spyOn(global, "setInterval").mockImplementation((callback) => { tick = callback as () => void; return timer; });
+    const clear = jest.spyOn(global, "clearInterval").mockImplementation(() => undefined);
+    const worker = createNotificationWorker({ repository, service: service(), logger });
+    worker.start(); await new Promise<void>((done) => setImmediate(done)); tick(); await new Promise<void>((done) => setImmediate(done)); await worker.stop();
+    expect(logger.error).toHaveBeenCalledWith("Notification worker run failed.", expect.objectContaining({ error: "database unavailable" }));
+    expect(repository.claimReady).toHaveBeenCalledTimes(1);
+    interval.mockRestore(); clear.mockRestore();
+  });
+
+  test("fences an old claim completion after the row is reclaimed", async () => {
+    const repo = new FakeOutboxRepository([event({ state: NotificationOutboxState.PROCESSING, attempts: 2 })]);
+    repo.rows[0].attempts = 3;
+    await (repo as unknown as { markProcessed(id: string, attempt: number, now: Date): Promise<boolean> }).markProcessed("outbox-1", 2, now);
+    expect(repo.rows[0].state).toBe(NotificationOutboxState.PROCESSING);
+  });
+
+  test("one-shot runner disconnects even when processing fails", async () => {
+    const failure = new Error("claim failed"); const disconnect = jest.fn(async () => undefined);
+    await expect(runNotificationWorkerOnce({ worker: { runOnce: jest.fn(async () => { throw failure; }) }, disconnect })).rejects.toBe(failure);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
   test("constructs server lifecycle without binding a port", async () => {
     process.env.ENABLE_CATEGORIES_JSON_FALLBACK = "true";
     const info = jest.spyOn(console, "info").mockImplementation(() => undefined);
@@ -208,5 +237,19 @@ describe("notification outbox worker", () => {
     expect(worker.stop).toHaveBeenCalledTimes(1);
     expect(disconnect).toHaveBeenCalledTimes(1);
     info.mockRestore();
+  });
+
+  test("server closes listeners before bounded worker drain and always disconnects", async () => {
+    process.env.ENABLE_CATEGORIES_JSON_FALLBACK = "true";
+    const { createServerLifecycle } = await import("../../server"); const order: string[] = [];
+    const info = jest.spyOn(console, "info").mockImplementation(() => undefined); const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const worker = { start: jest.fn(), stop: jest.fn(() => new Promise<void>(() => { order.push("worker-stop"); })) };
+    const server = { close: (callback: (error?: Error) => void) => { order.push("http-close"); callback(); } };
+    const lifecycle = createServerLifecycle({ worker: worker as never, listen: ((_port: number, ready: () => void) => { ready(); return server as never; }) as never, disconnect: async () => { order.push("disconnect"); }, drainTimeoutMs: 1 } as never);
+    lifecycle.start();
+    const settled = await Promise.race([lifecycle.stop().then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30))]);
+    expect(settled).toBe(true);
+    expect(order).toEqual(["http-close", "worker-stop", "disconnect"]);
+    info.mockRestore(); warn.mockRestore();
   });
 });

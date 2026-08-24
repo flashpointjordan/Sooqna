@@ -7,13 +7,14 @@ export type NotificationOutboxRecord = {
   id: string; eventType: NotificationType; aggregateType: string; aggregateId: string; recipientId: string | null;
   payload: unknown; dedupeKey: string; state: NotificationOutboxState; attempts: number; availableAt: Date;
   processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
+  claimAttempt: number;
 };
 
 export type NotificationOutboxRepository = {
   recoverStaleProcessing(now: Date, staleBefore: Date): Promise<{ recovered: number; dead: Array<{ id: string; attempts: number }> }>;
   claimReady(limit: number, now: Date): Promise<NotificationOutboxRecord[]>;
-  markProcessed(id: string, now: Date): Promise<void>;
-  markFailure(id: string, error: string, availableAt: Date, now: Date): Promise<NotificationOutboxState>;
+  markProcessed(id: string, claimAttempt: number, now: Date): Promise<boolean>;
+  markFailure(id: string, claimAttempt: number, error: string, availableAt: Date, now: Date): Promise<NotificationOutboxState>;
 };
 
 export type NotificationWorkerService = {
@@ -73,29 +74,33 @@ export function createNotificationWorker(deps: WorkerDeps) {
     for (const row of rows) {
       try {
         await process(row);
-        await deps.repository.markProcessed(row.id, now());
+        await deps.repository.markProcessed(row.id, row.claimAttempt, now());
       } catch (error) {
         const message = errorMessage(error);
         const failedAt = now();
         const delay = Math.min(30_000, 1_000 * 2 ** (row.attempts - 1)) + Math.max(0, jitter());
-        const state = await deps.repository.markFailure(row.id, message, new Date(failedAt.getTime() + delay), failedAt);
+        const state = await deps.repository.markFailure(row.id, row.claimAttempt, message, new Date(failedAt.getTime() + delay), failedAt);
         if (state === NotificationOutboxState.DEAD) deps.logger?.error("Notification outbox event is dead.", { outboxId: row.id, attempts: row.attempts, error: message });
       }
     }
   }
 
+  const scheduleRun = () => {
+    void runOnce().catch((error: unknown) => deps.logger?.error("Notification worker run failed.", { error: errorMessage(error) }));
+  };
+  const runOnce = async (): Promise<void> => {
+    if (stopping) return;
+    if (active) return active;
+    active = execute();
+    try { await active; } finally { active = undefined; }
+  };
   return {
-    async runOnce(): Promise<void> {
-      if (stopping) return;
-      if (active) return active;
-      active = execute();
-      try { await active; } finally { active = undefined; }
-    },
+    runOnce,
     start(): void {
       if (timer) return;
       stopping = false;
-      void this.runOnce();
-      timer = setInterval(() => { void this.runOnce(); }, intervalMs);
+      scheduleRun();
+      timer = setInterval(scheduleRun, intervalMs);
       timer.unref();
     },
     async stop(): Promise<void> {
@@ -136,11 +141,18 @@ function parsePayload(value: unknown): NotificationEventPayload {
   return projectNotificationEventPayload(payload);
 }
 
+export async function runNotificationWorkerOnce(deps: { worker: Pick<ReturnType<typeof createNotificationWorker>, "runOnce">; disconnect?: () => Promise<void> }): Promise<void> {
+  try { await deps.worker.runOnce(); }
+  finally { await deps.disconnect?.(); }
+}
+
 if (require.main === module) {
   void (async () => {
     const [{ PrismaNotificationsRepository }, { NotificationsService }, { logger }] = await Promise.all([
       import("./notifications.repository"), import("./notifications.service"), import("../../config/logger"),
     ]);
-    await createNotificationWorker({ repository: new PrismaNotificationsRepository(), service: new NotificationsService(new PrismaNotificationsRepository()), logger }).runOnce();
-  })();
+    const repository = new PrismaNotificationsRepository();
+    const { prisma } = await import("../../config/prisma");
+    await runNotificationWorkerOnce({ worker: createNotificationWorker({ repository, service: new NotificationsService(repository), logger }), disconnect: () => prisma.$disconnect() });
+  })().catch((error: unknown) => { process.exitCode = 1; process.stderr.write(`Notification worker failed: ${errorMessage(error)}\n`); });
 }
