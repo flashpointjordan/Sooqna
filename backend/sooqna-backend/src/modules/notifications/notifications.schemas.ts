@@ -3,6 +3,15 @@ import { z } from "zod";
 import { assertInternalActionUrl } from "./notifications.templates";
 
 const notificationIdSchema = z.string().trim().min(1).max(128);
+const hasAtMostCodePoints = (maximum: number) => (value: string): boolean => Array.from(value).length <= maximum;
+const codePointLimitedText = (maximum: number) =>
+  z.string().trim().min(1).refine(hasAtMostCodePoints(maximum), `Must be at most ${maximum} Unicode code points`);
+const strictNumericLimit = z
+  .preprocess(
+    (value) => typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value) ? Number(value) : value,
+    z.number().int().min(1).max(50)
+  )
+  .default(20);
 const internalActionUrlSchema = z
   .string()
   .trim()
@@ -18,7 +27,7 @@ const internalActionUrlSchema = z
 
 export const notificationListQuerySchema = z
   .object({
-    limit: z.coerce.number().int().min(1).max(50).default(20),
+    limit: strictNumericLimit,
     cursor: z.string().trim().min(1).max(512).optional(),
     category: z.enum(NotificationCategory).optional(),
     unread: z.union([z.boolean(), z.enum(["true", "false"]).transform((value) => value === "true")]).optional(),
@@ -38,8 +47,8 @@ export const notificationPreferencesUpdateBodySchema = z
   .refine((value) => Object.keys(value).length > 0, "At least one notification preference is required");
 
 const broadcastCopySchema = {
-  title: z.string().trim().min(1).max(100),
-  body: z.string().trim().min(1).max(240),
+  title: codePointLimitedText(100),
+  body: codePointLimitedText(240),
   actionUrl: internalActionUrlSchema.optional(),
 };
 

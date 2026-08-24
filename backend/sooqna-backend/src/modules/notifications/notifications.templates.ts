@@ -18,17 +18,13 @@ export type RenderedNotification = {
 
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
 const HAS_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/;
-const SAVED_SEARCH_QUERY_PARAMS = [
+const SAVED_SEARCH_STRING_QUERY_PARAMS = [
   ["q", "search"],
   ["category", "category"],
   ["city", "city"],
-  ["minPrice", "minPrice"],
-  ["maxPrice", "maxPrice"],
-  ["priceMin", "priceMin"],
-  ["priceMax", "priceMax"],
-  ["condition", "condition"],
   ["sort", "sort"],
 ] as const satisfies ReadonlyArray<readonly [keyof SavedSearchQueryFacts, string]>;
+const LISTING_SORT_VALUES = new Set(["price_asc", "price_desc", "newest"]);
 const CATEGORY_BY_TYPE = {
   MESSAGE_RECEIVED: NotificationCategory.MESSAGES,
   LISTING_APPROVED: NotificationCategory.LISTINGS,
@@ -76,14 +72,22 @@ function listingUrl(listingId: string): string {
 
 function canonicalSavedSearchUrl(query: SavedSearchQueryFacts): string {
   const params = new URLSearchParams();
-  for (const [key, parameter] of SAVED_SEARCH_QUERY_PARAMS) {
+  for (const [key, parameter] of SAVED_SEARCH_STRING_QUERY_PARAMS) {
     const value = query[key];
     if (typeof value === "string") {
       const cleaned = cleanText(value, 120);
-      if (cleaned) params.set(parameter, cleaned);
-    } else if (typeof value === "number" && Number.isFinite(value)) {
-      params.set(parameter, String(value));
+      if (cleaned && (key !== "sort" || LISTING_SORT_VALUES.has(cleaned))) {
+        params.set(parameter, cleaned);
+      }
     }
+  }
+  const priceMin = query.priceMin ?? query.minPrice;
+  const priceMax = query.priceMax ?? query.maxPrice;
+  if (typeof priceMin === "number" && Number.isFinite(priceMin) && priceMin >= 0) {
+    params.set("priceMin", String(priceMin));
+  }
+  if (typeof priceMax === "number" && Number.isFinite(priceMax) && priceMax >= 0) {
+    params.set("priceMax", String(priceMax));
   }
   const search = params.toString();
   return search ? `/listings?${search}` : "/listings";
