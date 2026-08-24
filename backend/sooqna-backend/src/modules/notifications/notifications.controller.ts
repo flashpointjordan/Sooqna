@@ -3,11 +3,14 @@ import { AppError } from "../../shared/errors/appError";
 import { sendSuccess } from "../../shared/contracts/api";
 import { PrismaNotificationsRepository } from "./notifications.repository";
 import { notificationListQuerySchema } from "./notifications.schemas";
-import { NotificationsService } from "./notifications.service";
-import { getNotificationBroker, NotificationBroker } from "./notifications.broker";
+import { NotificationsService, type NotificationsRepository } from "./notifications.service";
+import { getNotificationBroker, NotificationBroker, publishNotificationSignal } from "./notifications.broker";
 
 export type NotificationsControllerService = Pick<NotificationsService, "list" | "unreadCount" | "markRead" | "markAllRead" | "delete" | "getPreferences" | "updatePreferences">;
-const service = new NotificationsService(new PrismaNotificationsRepository());
+export function createProductionNotificationsService(repository: NotificationsRepository): NotificationsService {
+  return new NotificationsService(repository, { publishSignal: publishNotificationSignal });
+}
+const service = createProductionNotificationsService(new PrismaNotificationsRepository());
 
 function userId(req: Request): string {
   const value = req.currentUser?.firebaseUid ?? req.authUser?.uid;
@@ -31,7 +34,8 @@ export const { listNotifications, getUnreadCount, markNotificationRead, markAllN
 
 export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount">) {
   return async (req: Request, res: Response): Promise<void> => {
-    const uid = userId(req);
+    const uid = req.currentUser?.firebaseUid;
+    if (!uid) throw new AppError(401, "Unauthorized.", "UNAUTHORIZED");
     if (broker.activeCount(uid) >= 3) throw new AppError(429, "Too many notification streams.", "TOO_MANY_STREAMS");
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");

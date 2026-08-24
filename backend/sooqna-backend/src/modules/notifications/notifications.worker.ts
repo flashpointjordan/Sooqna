@@ -31,7 +31,7 @@ type WorkerDeps = {
   now?: () => Date;
   jitter?: () => number;
   logger?: { error(message: string, meta?: Record<string, unknown>): void; warn?(message: string, meta?: Record<string, unknown>): void };
-  publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void>;
+  publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void;
   processEvent?: (row: NotificationOutboxRecord) => Promise<void>;
 };
 
