@@ -60,4 +60,12 @@ describe("NotificationBroker", () => {
     expect(other.end).toHaveBeenCalledTimes(1);
     expect(broker.activeCount()).toBe(0);
   });
+
+  test("permanently rejects late subscriptions once shutdown begins", () => {
+    const broker = new NotificationBroker(); broker.beginShutdown();
+
+    expect(() => broker.subscribe("user-a", response() as never)).toThrow(expect.objectContaining({ statusCode: 503, code: "SHUTTING_DOWN" }));
+    expect(broker.closeAll()).toBe(0);
+    expect(() => broker.subscribe("user-b", response() as never)).toThrow(expect.objectContaining({ statusCode: 503, code: "SHUTTING_DOWN" }));
+  });
 });

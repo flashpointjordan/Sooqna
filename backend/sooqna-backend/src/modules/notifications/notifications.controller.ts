@@ -39,10 +39,11 @@ export function createNotificationsController(service: NotificationsControllerSe
 }
 export const { listNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead, deleteNotification, getNotificationPreferences, updateNotificationPreferences } = createNotificationsController(service);
 
-export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount" | "registerCleanup">) {
+export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount" | "isClosing" | "registerCleanup">) {
   return async (req: Request, res: Response): Promise<void> => {
     const uid = req.currentUser?.firebaseUid;
     if (!uid) throw new AppError(401, "Unauthorized.", "UNAUTHORIZED");
+    if (broker.isClosing()) throw new AppError(503, "Notification streaming is shutting down.", "SHUTTING_DOWN");
     if (broker.activeCount(uid) >= 3) throw new AppError(429, "Too many notification streams.", "TOO_MANY_STREAMS");
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");

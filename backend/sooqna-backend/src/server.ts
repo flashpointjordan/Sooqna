@@ -42,7 +42,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
     async stop(): Promise<void> {
       if (stopping) return stopping;
       stopping = (async () => {
-        broker.closeAll();
+        broker.beginShutdown();
         const closing = server ? new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve())) : Promise.resolve();
         try {
           const drained = await waitForWorker(worker.stop(), drainTimeoutMs);
