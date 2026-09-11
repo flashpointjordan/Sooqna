@@ -1,19 +1,17 @@
 # Sooqna
 
-Sooqna is a production-oriented classifieds marketplace monorepo.
+Sooqna is a production-oriented Arabic classifieds marketplace monorepo for Syria.
 
-The active product is:
+## Active Product
 
-- `apps/web` - Next.js web app
-- `backend/sooqna-backend` - Express REST API
-- PostgreSQL through Prisma - business data source of truth
-- Firebase Auth - identity provider only
+- `apps/web` - Next.js 15 web app with Arabic/RTL UI.
+- `backend/sooqna-backend` - Express REST API.
+- PostgreSQL through Prisma - business data source of truth.
+- Firebase Auth - identity provider only; backend verifies Firebase ID tokens.
 
-Removed or archived concepts are intentionally not kept in the repository. Generated reports, local screenshots, logs, old phase documents, ZIP exports, and temporary helper tools should stay out of Git.
+Generated reports, local screenshots, logs, ZIP exports, build outputs, and temporary helper tools should stay out of Git.
 
 ## Quick Start
-
-### Backend
 
 ```bash
 cd backend/sooqna-backend
@@ -25,8 +23,6 @@ npm run dev
 
 Backend API: `http://localhost:5000/api`
 
-### Web
-
 ```bash
 cd apps/web
 npm install
@@ -35,34 +31,23 @@ npm run dev
 
 Web app: `http://localhost:3000`
 
-Do not run `npm run build` while `npm run dev` is running for the web app. The build script includes a guard for this because both commands write to `.next`.
+Do not run `npm run build` while `npm run dev` is running for the web app. Both write to `.next`, and the build script includes a guard for this.
 
-## Main Commands
+## Main Checks
 
 ```bash
-# Web
+cd backend/sooqna-backend
+npm run typecheck
+npm test
+npm run build
+```
+
+```bash
 cd apps/web
 npm run lint
 npm run build
-
-# Backend
-cd backend/sooqna-backend
-npm run typecheck
-npm run build
-npm test
 ```
 
 ## Documentation
 
-Current docs live in `docs/`:
-
-- `docs/sooqna-website-complete-documentation.md` - single complete website reference
-- `docs/architecture.md`
-- `docs/local-development.md`
-- `docs/api-reference.md`
-- `docs/admin-dashboard.md`
-- `docs/deployment-operations.md`
-- `docs/security.md`
-- `docs/product-roadmap.md`
-
-Start with `docs/README.md`.
+Start with `docs/project-documentation.md` for the A-to-Z project reference, then use `docs/README.md` for the full documentation map.
