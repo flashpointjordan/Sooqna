@@ -62,14 +62,14 @@ enum NotificationBroadcastAudience {
 }
 
 model User {
-  id              String   @id
-  firebaseUid     String   @unique
+  id              String    @id
+  firebaseUid     String    @unique
   email           String
   name            String
   avatarUrl       String?
   bio             String?
   phone           String?
-  role            Role     @default(BUYER)
+  role            Role      @default(BUYER)
   accountStatus   String
   isEmailVerified Boolean
   isPhoneVerified Boolean   @default(false)
@@ -82,13 +82,13 @@ model User {
   createdAt       DateTime
   updatedAt       DateTime
 
-  listings        Listing[]
-  favorites       Favorite[]
-  savedSearches   SavedSearch[]
-  reviewsGiven    Review[]   @relation("ReviewerRelation")
-  reviewsReceived Review[]   @relation("SellerRelation")
-  notifications            Notification[]
-  notificationPreferences  NotificationPreference[]
+  listings                Listing[]
+  favorites               Favorite[]
+  savedSearches           SavedSearch[]
+  reviewsGiven            Review[]                 @relation("ReviewerRelation")
+  reviewsReceived         Review[]                 @relation("SellerRelation")
+  notifications           Notification[]
+  notificationPreferences NotificationPreference[]
 }
 
 model Notification {
@@ -204,6 +204,7 @@ model Listing {
   uploads       Upload[]
   listingImages ListingImage[]
 
+  @@unique([ownerId, clientRequestId], map: "listings_owner_client_request_unique")
   @@index([ownerId])
   @@index([status, deletedAt])
   @@index([categoryId])
@@ -215,7 +216,6 @@ model Listing {
   @@index([categoryId, status, createdAt])
   @@index([locationCity, status, createdAt])
   @@index([isFeatured, status, createdAt])
-  @@unique([ownerId, clientRequestId], map: "listings_owner_client_request_unique")
 }
 
 model ListingModerationLog {
@@ -359,17 +359,17 @@ model Upload {
 }
 
 model Report {
-  id           String   @id
-  targetType   String
-  targetId     String
-  reasonCode   String
-  details      String
-  reporterId   String
-  status       String
-  moderatorId  String?
+  id            String   @id
+  targetType    String
+  targetId      String
+  reasonCode    String
+  details       String
+  reporterId    String
+  status        String
+  moderatorId   String?
   moderatorNote String?
-  createdAt    DateTime
-  updatedAt    DateTime
+  createdAt     DateTime
+  updatedAt     DateTime
 
   @@index([status, createdAt])
   @@index([targetType, targetId])
