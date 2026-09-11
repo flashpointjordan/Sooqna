@@ -1,10 +1,10 @@
 # Sooqna Documentation
 
-This folder is the current source of project documentation. It replaces old phase notes, generated PDFs, screenshots, and temporary planning files.
+This folder is the maintained project documentation source. It replaces old phase notes, generated reports, screenshots, exports, and temporary planning files.
 
 ## Reading Order
 
-1. `sooqna-website-complete-documentation.md` - single complete website reference.
+1. `project-documentation.md` - A-to-Z project reference and current source of truth.
 2. `architecture.md` - system boundaries and data ownership.
 3. `local-development.md` - local setup and daily commands.
 4. `api-reference.md` - backend modules and route map.
@@ -12,10 +12,11 @@ This folder is the current source of project documentation. It replaces old phas
 6. `deployment-operations.md` - CI/CD, deployment, database, and runtime operations.
 7. `security.md` - auth, authorization, rate limits, uploads, and secrets.
 8. `product-roadmap.md` - recommended product improvements.
+9. `sooqna-website-complete-documentation.md` - legacy complete website reference kept for historical detail.
 
 ## Documentation Rules
 
-- Keep docs current with production code.
-- Do not commit generated reports, screenshots, logs, or exports.
-- Do not include secrets, private keys, database URLs, or Firebase API credentials.
-- Prefer one maintained document over many stale phase documents.
+- Keep `project-documentation.md` aligned with production code when architecture, commands, env vars, deploy flow, or user-facing behavior changes.
+- Do not commit generated reports, screenshots, logs, ZIP exports, local build output, or dependency folders.
+- Do not include secrets, private keys, database URLs, Firebase credentials, or production tokens.
+- Prefer updating the maintained reference over adding new phase documents.
