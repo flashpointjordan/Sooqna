@@ -80,7 +80,7 @@ describe("marketplace engagement notification producers", () => {
     const body = `hello ${"x".repeat(240)} password=super-secret token=top-secret alice@example.com`;
     const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
 
-    const message = await service.createMessage({ conversationId: "conv-1", senderId: "sender-1", type: "text", text: body });
+    const message = await service.createMessage({ conversationId: "conv-1", senderId: "sender-1", clientRequestId: "request-123", type: "text", text: body });
 
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue).toHaveBeenNthCalledWith(1, expect.objectContaining({
@@ -108,7 +108,7 @@ describe("marketplace engagement notification producers", () => {
     const enqueue = jest.fn().mockRejectedValue(new Error("outbox unavailable"));
     const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
 
-    await expect(service.createMessage({ conversationId: "conv-1", senderId: "sender-1", type: "text", text: "Hello" })).rejects.toThrow("outbox unavailable");
+    await expect(service.createMessage({ conversationId: "conv-1", senderId: "sender-1", clientRequestId: "request-456", type: "text", text: "Hello" })).rejects.toThrow("outbox unavailable");
   });
 
   it("notifies a listing owner once only when a favorite is newly created, never for remove or self-favorites", async () => {

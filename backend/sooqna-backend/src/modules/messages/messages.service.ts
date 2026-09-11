@@ -2,7 +2,7 @@ import { generateId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { AppError } from "../../shared/errors/appError";
 import type { MessagesRepository } from "./repositories/messages.repository";
-import type { Conversation, Message, MessageType } from "./messages.types";
+import type { Conversation, CreateMessageInput, Message } from "./messages.types";
 
 type CreateConversationInput = {
   participantIds: string[];
@@ -10,14 +10,6 @@ type CreateConversationInput = {
   listingId: string;
   listingSnapshot: Conversation["listingSnapshot"];
   createdBy: string;
-};
-
-type CreateMessageInput = {
-  conversationId: string;
-  senderId: string;
-  type: MessageType;
-  text: string;
-  attachments?: unknown[];
 };
 
 export class MessagesService {

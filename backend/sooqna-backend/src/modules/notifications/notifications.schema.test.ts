@@ -244,4 +244,27 @@ describe("notification Prisma schema and migration contract", () => {
     expect(migration).toContain('ALTER TABLE "NotificationPreference" ADD CONSTRAINT "NotificationPreference_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("firebaseUid") ON DELETE CASCADE ON UPDATE CASCADE');
     expect(migration).not.toMatch(/\b(?:DROP\s+(?:TABLE|TYPE|INDEX|COLUMN|CONSTRAINT)|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|ALTER\s+TABLE[\s\S]*?\bDROP\b)/i);
   });
+
+  it("adds message idempotency and unread lookup contracts to Prisma and PostgreSQL", () => {
+    const message = expectSchemaFields("Message", {
+      clientRequestId: "String?",
+    });
+
+    expect(modelDirectives(message, "unique")).toContain(
+      '@@unique([conversationId, senderId, clientRequestId], map: "messages_conversation_sender_request_unique")'
+    );
+    expect(modelDirectives(message, "index")).toContain(
+      '@@index([conversationId, isRead, deletedAt, senderId], map: "messages_unread_lookup_idx")'
+    );
+
+    expect(migration).toMatch(
+      /ALTER TABLE "Message" ADD COLUMN\s+"clientRequestId" TEXT;/
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "messages_conversation_sender_request_unique" ON "Message"("conversationId", "senderId", "clientRequestId")'
+    );
+    expect(migration).toContain(
+      'CREATE INDEX "messages_unread_lookup_idx" ON "Message"("conversationId", "isRead", "deletedAt", "senderId")'
+    );
+  });
 });

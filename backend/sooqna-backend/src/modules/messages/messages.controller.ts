@@ -68,6 +68,7 @@ export async function createMessage(req: Request, res: Response): Promise<void> 
   const message = await service.createMessage({
     conversationId: req.params.conversationId,
     senderId: uid,
+    clientRequestId: String(req.body?.clientRequestId ?? ""),
     type: (req.body?.type as "text" | "image" | "system") ?? "text",
     text: String(req.body?.text ?? ""),
     attachments: Array.isArray(req.body?.attachments) ? req.body.attachments : [],

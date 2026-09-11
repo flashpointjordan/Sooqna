@@ -92,6 +92,7 @@ export const createConversationBodySchema = z
 
 export const createMessageBodySchema = z
   .object({
+    clientRequestId: z.string().trim().min(8).max(128),
     type: z.enum(["text", "image", "system"]).default("text"),
     text: z.string().trim().max(4000).optional().default(""),
     attachments: z.array(z.unknown()).max(5).optional().default([]),

@@ -13,6 +13,9 @@ CREATE TYPE "NotificationBroadcastStatus" AS ENUM ('PENDING', 'PROCESSING', 'COM
 -- CreateEnum
 CREATE TYPE "NotificationBroadcastAudience" AS ENUM ('ALL', 'ROLES', 'USERS');
 
+-- AlterTable
+ALTER TABLE "Message" ADD COLUMN "clientRequestId" TEXT;
+
 -- CreateTable
 CREATE TABLE "Notification" (
     "id" TEXT NOT NULL,
@@ -109,6 +112,12 @@ CREATE INDEX "NotificationOutbox_state_availableAt_createdAt_idx" ON "Notificati
 
 -- CreateIndex
 CREATE INDEX "NotificationBroadcast_status_createdAt_idx" ON "NotificationBroadcast"("status", "createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "messages_conversation_sender_request_unique" ON "Message"("conversationId", "senderId", "clientRequestId");
+
+-- CreateIndex
+CREATE INDEX "messages_unread_lookup_idx" ON "Message"("conversationId", "isRead", "deletedAt", "senderId");
 
 -- AddForeignKey
 ALTER TABLE "Notification" ADD CONSTRAINT "Notification_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("firebaseUid") ON DELETE CASCADE ON UPDATE CASCADE;

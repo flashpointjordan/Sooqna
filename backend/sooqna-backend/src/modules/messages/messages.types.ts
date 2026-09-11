@@ -2,6 +2,15 @@ import { MESSAGE_TYPES } from "../../shared/constants/domain";
 
 export type MessageType = (typeof MESSAGE_TYPES)[number];
 
+export interface CreateMessageInput {
+  conversationId: string;
+  senderId: string;
+  clientRequestId: string;
+  type: MessageType;
+  text: string;
+  attachments?: unknown[];
+}
+
 export interface Conversation {
   id: string;
   participantIds: string[];
