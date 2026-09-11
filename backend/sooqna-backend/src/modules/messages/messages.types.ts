@@ -35,6 +35,7 @@ export interface Message {
   id: string;
   conversationId: string;
   senderId: string;
+  clientRequestId: string | null;
   type: MessageType;
   text: string;
   attachments: unknown[];
@@ -43,4 +44,9 @@ export interface Message {
   createdAt: string;
   deletedAt: string | null;
 }
+
+export type CreateMessageResult = {
+  message: Message;
+  created: boolean;
+};
 

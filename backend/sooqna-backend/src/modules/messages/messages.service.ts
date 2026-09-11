@@ -3,6 +3,9 @@ import { nowIso } from "../../utils/time";
 import { AppError } from "../../shared/errors/appError";
 import type { MessagesRepository } from "./repositories/messages.repository";
 import type { Conversation, CreateMessageInput, Message } from "./messages.types";
+import type { CreateMessageResult } from "./messages.types";
+import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "../notifications/notifications.producer";
+import type { TransactionContext } from "../../shared/database/unitOfWork";
 
 type CreateConversationInput = {
   participantIds: string[];
@@ -13,7 +16,13 @@ type CreateConversationInput = {
 };
 
 export class MessagesService {
-  constructor(private readonly repo: MessagesRepository) {}
+  constructor(
+    private readonly repo: MessagesRepository,
+    private readonly enqueue: (
+      input: EnqueueNotificationEventInput,
+      tx?: TransactionContext
+    ) => Promise<unknown> = enqueueNotificationEvent
+  ) {}
 
   async createConversation(input: CreateConversationInput): Promise<Conversation> {
     if (!input.listingId.trim()) {
@@ -60,7 +69,7 @@ export class MessagesService {
     return this.repo.createConversation(conversation);
   }
 
-  async createMessage(input: CreateMessageInput): Promise<Message> {
+  async createMessage(input: CreateMessageInput): Promise<CreateMessageResult> {
     const now = nowIso();
     const conversation = await this.repo.findConversationById(input.conversationId);
     if (!conversation) throw new AppError(404, "Conversation not found", "NOT_FOUND");
@@ -79,6 +88,7 @@ export class MessagesService {
       id: generateId("msg"),
       conversationId: input.conversationId,
       senderId: input.senderId,
+      clientRequestId: input.clientRequestId,
       type: input.type,
       text: input.text,
       attachments: input.attachments ?? [],
@@ -88,17 +98,42 @@ export class MessagesService {
       deletedAt: null,
     };
 
-    await this.repo.createMessage(message);
-    await this.repo.updateConversation({
+    const updatedConversation = {
       ...conversation,
       lastMessageText: input.text,
       lastMessageSenderId: input.senderId,
       lastMessageAt: now,
       lastMessageType: input.type,
       updatedAt: now,
-    });
+    };
 
-    return message;
+    const senderName = conversation.participants[input.senderId]?.fullName?.trim() || "Sooqna user";
+    const messagePreview =
+      createSafeMessagePreview(input.text) || (input.type === "image" ? "Image" : "Message");
+    const notifications: EnqueueNotificationEventInput[] = conversation.participantIds
+      .filter((participantId) => participantId !== input.senderId)
+      .map((recipientId) => ({
+        aggregateType: "message",
+        aggregateId: message.id,
+        recipientId,
+        dedupeKey: `message:${message.id}:${recipientId}`,
+        payload: {
+          eventType: "MESSAGE_RECEIVED",
+          recipientId,
+          conversationId: conversation.id,
+          messageId: message.id,
+          senderId: input.senderId,
+          senderName,
+          listingId: conversation.listingId,
+          listingTitle: conversation.listingSnapshot.title,
+          messagePreview,
+        },
+      }));
+
+    return this.repo.createMessageAtomically(
+      { message, conversation: updatedConversation, notifications },
+      this.enqueue
+    );
   }
 
   async getConversation(id: string): Promise<Conversation | null> {
@@ -155,5 +190,18 @@ export class MessagesService {
     const totalUnread = Object.values(byConversation).reduce((sum, count) => sum + count, 0);
     return { totalUnread, byConversation };
   }
+}
+
+const EMAIL_LIKE = /[^\s@]+@[^\s@]+\.[^\s@]+/gu;
+const SECRET_FRAGMENT = /["']?(?:password|token)["']?\s*(?:(?:=|:)\s*|\s+)["']?[^\s"',}]+["']?/giu;
+
+export function createSafeMessagePreview(value: string): string {
+  const normalized = value
+    .normalize("NFC")
+    .replace(SECRET_FRAGMENT, "[redacted]")
+    .replace(EMAIL_LIKE, "[redacted]")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return Array.from(normalized).slice(0, 120).join("");
 }
 

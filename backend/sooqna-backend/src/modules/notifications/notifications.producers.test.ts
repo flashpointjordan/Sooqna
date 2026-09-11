@@ -27,6 +27,24 @@ type CapturedEvent = {
 };
 type Enqueue = (event: CapturedEvent) => Promise<unknown>;
 
+function atomicRepo(overrides: Partial<MessagesRepository> = {}): jest.Mocked<MessagesRepository> {
+  return {
+    createConversation: jest.fn(),
+    findConversationById: jest.fn().mockResolvedValue(conversation()),
+    listConversationsForUser: jest.fn(),
+    updateConversation: jest.fn(),
+    createMessage: jest.fn(),
+    createMessageAtomically: jest.fn().mockImplementation(async ({ message, notifications }, enqueue) => {
+      for (const notification of notifications) await enqueue(notification, {} as never);
+      return { message, created: true };
+    }),
+    listMessages: jest.fn(),
+    markConversationMessagesRead: jest.fn(),
+    getUnreadCountMapForUser: jest.fn(),
+    ...overrides,
+  } as jest.Mocked<MessagesRepository>;
+}
+
 function conversation() {
   return {
     id: "conv-1",
@@ -66,21 +84,15 @@ describe("marketplace engagement notification producers", () => {
 
   it("fans a persisted message out to every non-sender participant with safe facts", async () => {
     const { MessagesService } = await import("../messages/messages.service");
-    const repo: jest.Mocked<MessagesRepository> = {
-      createConversation: jest.fn(),
-      findConversationById: jest.fn().mockResolvedValue(conversation()),
-      listConversationsForUser: jest.fn(),
-      updateConversation: jest.fn().mockResolvedValue(conversation()),
-      createMessage: jest.fn().mockImplementation(async (message) => message),
-      listMessages: jest.fn(),
-      markConversationMessagesRead: jest.fn(),
-      getUnreadCountMapForUser: jest.fn(),
-    };
+    const repo = atomicRepo();
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
     const body = `hello ${"x".repeat(240)} password=super-secret token=top-secret alice@example.com`;
     const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
 
-    const message = await service.createMessage({ conversationId: "conv-1", senderId: "sender-1", clientRequestId: "request-123", type: "text", text: body });
+    const result = await service.createMessage({ conversationId: "conv-1", senderId: "sender-1", clientRequestId: "request-123", type: "text", text: body });
+    const message = result.message;
+
+    expect(result.created).toBe(true);
 
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue).toHaveBeenNthCalledWith(1, expect.objectContaining({
@@ -89,8 +101,8 @@ describe("marketplace engagement notification producers", () => {
       recipientId: "recipient-1",
       dedupeKey: `message:${message.id}:recipient-1`,
       payload: expect.objectContaining({ eventType: "MESSAGE_RECEIVED", recipientId: "recipient-1", senderId: "sender-1", senderName: "Sender One", conversationId: "conv-1", listingId: "listing-1", listingTitle: "Trusted listing" }),
-    }));
-    expect(enqueue).toHaveBeenNthCalledWith(2, expect.objectContaining({ recipientId: "recipient-2", dedupeKey: `message:${message.id}:recipient-2` }));
+    }), expect.anything());
+    expect(enqueue).toHaveBeenNthCalledWith(2, expect.objectContaining({ recipientId: "recipient-2", dedupeKey: `message:${message.id}:recipient-2` }), expect.anything());
     const facts = enqueue.mock.calls.map(([event]) => event.payload);
     expect(JSON.stringify(facts)).not.toContain(body);
     expect(JSON.stringify(facts)).not.toContain("super-secret");
@@ -100,15 +112,29 @@ describe("marketplace engagement notification producers", () => {
 
   it("rejects the message transaction when notification enqueue fails", async () => {
     const { MessagesService } = await import("../messages/messages.service");
-    const repo = {
-      findConversationById: jest.fn().mockResolvedValue(conversation()),
-      createMessage: jest.fn().mockImplementation(async (message) => message),
-      updateConversation: jest.fn().mockResolvedValue(conversation()),
-    } as unknown as MessagesRepository;
+    const repo = atomicRepo();
     const enqueue = jest.fn().mockRejectedValue(new Error("outbox unavailable"));
     const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
 
     await expect(service.createMessage({ conversationId: "conv-1", senderId: "sender-1", clientRequestId: "request-456", type: "text", text: "Hello" })).rejects.toThrow("outbox unavailable");
+  });
+
+  it("uses a non-empty safe preview for an image message with no text", async () => {
+    const { MessagesService } = await import("../messages/messages.service");
+    const repo = atomicRepo();
+    const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
+    const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
+
+    await service.createMessage({
+      conversationId: "conv-1",
+      senderId: "sender-1",
+      clientRequestId: "request-image",
+      type: "image",
+      text: "",
+      attachments: [{ id: "upload-1" }],
+    });
+
+    expect(enqueue.mock.calls[0]?.[0].payload).toMatchObject({ messagePreview: "Image" });
   });
 
   it("notifies a listing owner once only when a favorite is newly created, never for remove or self-favorites", async () => {

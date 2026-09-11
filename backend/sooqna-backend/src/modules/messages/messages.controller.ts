@@ -65,7 +65,7 @@ export async function createConversation(req: Request, res: Response): Promise<v
 export async function createMessage(req: Request, res: Response): Promise<void> {
   const uid = requireTrustedUid(req);
 
-  const message = await service.createMessage({
+  const { message, created } = await service.createMessage({
     conversationId: req.params.conversationId,
     senderId: uid,
     clientRequestId: String(req.body?.clientRequestId ?? ""),
@@ -73,14 +73,16 @@ export async function createMessage(req: Request, res: Response): Promise<void> 
     text: String(req.body?.text ?? ""),
     attachments: Array.isArray(req.body?.attachments) ? req.body.attachments : [],
   });
-  await logAuditEvent({
-    actorId: uid,
-    action: "message.create",
-    targetType: "conversation",
-    targetId: req.params.conversationId,
-    metadata: { messageId: message.id, type: message.type },
-  });
-  res.status(201).json({ success: true, message });
+  if (created) {
+    await logAuditEvent({
+      actorId: uid,
+      action: "message.create",
+      targetType: "conversation",
+      targetId: req.params.conversationId,
+      metadata: { messageId: message.id, type: message.type },
+    });
+  }
+  res.status(created ? 201 : 200).json({ success: true, message, created });
 }
 
 export async function getConversation(req: Request, res: Response): Promise<void> {

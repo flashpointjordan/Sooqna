@@ -2,6 +2,8 @@ import type { Request, Response } from "express";
 
 const mockFindListingById = jest.fn();
 const mockCreateConversationInService = jest.fn();
+const mockCreateMessageInService = jest.fn();
+const mockLogAuditEvent = jest.fn();
 
 jest.mock("../listings/repositories/listings.repository", () => ({
   PrismaListingsRepository: jest.fn().mockImplementation(() => ({
@@ -12,8 +14,11 @@ jest.mock("../listings/repositories/listings.repository", () => ({
 jest.mock("./messages.service", () => ({
   MessagesService: jest.fn().mockImplementation(() => ({
     createConversation: mockCreateConversationInService,
+    createMessage: mockCreateMessageInService,
   })),
 }));
+
+jest.mock("../audit/audit.service", () => ({ logAuditEvent: mockLogAuditEvent }));
 
 jest.mock("./repositories/messages.repository", () => ({
   PrismaMessagesRepository: jest.fn(),
@@ -31,6 +36,34 @@ describe("message conversation identity", () => {
   beforeEach(() => {
     mockFindListingById.mockReset();
     mockCreateConversationInService.mockReset();
+    mockCreateMessageInService.mockReset();
+    mockLogAuditEvent.mockReset();
+  });
+
+  it.each([
+    [true, 201, 1],
+    [false, 200, 0],
+  ])("returns the correct status and audits only when created=%s", async (created, status, auditCalls) => {
+    const message = { id: "msg-1", type: "text", senderId: "trusted-user", clientRequestId: "request-123" };
+    mockCreateMessageInService.mockResolvedValue({ message, created });
+    const req = {
+      currentUser: { firebaseUid: "trusted-user" },
+      params: { conversationId: "conv-1" },
+      body: { senderId: "attacker", clientRequestId: "request-123", type: "text", text: "Hello" },
+    } as unknown as Request;
+    const res = createResponse();
+
+    const { createMessage } = await import("./messages.controller");
+    await createMessage(req, res as unknown as Response);
+
+    expect(mockCreateMessageInService).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: "conv-1",
+      senderId: "trusted-user",
+      clientRequestId: "request-123",
+    }));
+    expect(res.status).toHaveBeenCalledWith(status);
+    expect(res.json).toHaveBeenCalledWith({ success: true, message, created });
+    expect(mockLogAuditEvent).toHaveBeenCalledTimes(auditCalls);
   });
 
   it("derives participants from authenticated user and listing owner instead of trusting client participantIds", async () => {

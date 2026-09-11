@@ -20,7 +20,15 @@ export function writeArrayFile<T>(filePath: string, records: T[]): void {
   fs.writeFileSync(filePath, JSON.stringify(records, null, 2), "utf8");
 }
 
+export function writeArrayFileAtomically<T>(filePath: string, records: T[]): void {
+  ensureDir(filePath);
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(records, null, 2), "utf8");
+  fs.renameSync(temporaryPath, filePath);
+}
+
 // Compatibility aliases used by migrated modules.
 export const readJsonArrayFile = readArrayFile;
 export const writeJsonArrayFile = writeArrayFile;
+export const writeJsonArrayFileAtomically = writeArrayFileAtomically;
 
