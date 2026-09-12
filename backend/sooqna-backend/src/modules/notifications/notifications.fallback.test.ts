@@ -10,6 +10,7 @@ jest.mock("../../config/prisma", () => ({ prisma: {} }));
 import { createNotificationWorker } from "./notifications.worker";
 import { NotificationsService } from "./notifications.service";
 import { createNotificationPublisher, NotificationBroker } from "./notifications.broker";
+import { encodeNotificationCursor } from "./notifications.types";
 import {
   JsonNotificationsRepository,
   type JsonNotificationsStore,
@@ -17,7 +18,7 @@ import {
 
 const now = new Date("2026-08-24T15:43:00.000Z");
 
-function store(): JsonNotificationsStore & { state: any; notificationState: any } {
+function store(): JsonNotificationsStore & { state: any; notificationState: any; mutationCount: number } {
   const value = {
     state: {
       conversations: [], messages: [],
@@ -31,8 +32,11 @@ function store(): JsonNotificationsStore & { state: any; notificationState: any 
       }],
     },
     notificationState: { notifications: [] as any[], preferences: [] as any[] },
+    mutationCount: 0,
     async mutateMessageState<T>(work: (state: any) => T | Promise<T>) { return work(value.state); },
+    async readNotificationState() { return structuredClone(value.notificationState); },
     async mutateNotificationState<T>(work: (state: any) => T | Promise<T>) {
+      value.mutationCount += 1;
       return work(value.notificationState);
     },
   };
@@ -92,5 +96,47 @@ describe("JSON notification fallback delivery", () => {
 
     expect(fallbackStore.notificationState.notifications).toHaveLength(1);
     expect(publishSignal).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses createdAt/id cursor pagination and does not rewrite state for reads", async () => {
+    const fallbackStore = store();
+    const base = {
+      userId: "recipient-1", type: NotificationType.MESSAGE_RECEIVED, category: "MESSAGES",
+      title: "Message", body: "Body", actionUrl: null, entityType: "conversation", entityId: "conv-1",
+      metadata: {}, dedupeKey: null, aggregationKey: null, readAt: null, deletedAt: null,
+      expiresAt: new Date("2026-12-01T00:00:00.000Z"), updatedAt: now,
+    };
+    fallbackStore.notificationState.notifications = [
+      { ...base, id: "c", createdAt: new Date("2026-08-24T15:43:00.000Z") },
+      { ...base, id: "b", createdAt: new Date("2026-08-24T15:43:00.000Z") },
+      { ...base, id: "a", createdAt: new Date("2026-08-24T15:42:00.000Z") },
+    ];
+    const repository = new JsonNotificationsRepository(fallbackStore);
+
+    const first = await repository.listActive("recipient-1", { limit: 1 }, now);
+    const second = await repository.listActive("recipient-1", { limit: 1, cursor: first.nextCursor! }, now);
+
+    expect(first.items.map((item) => item.id)).toEqual(["c"]);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextCursor).toBe(encodeNotificationCursor({ createdAt: first.items[0].createdAt.toISOString(), id: "c" }));
+    expect(second.items.map((item) => item.id)).toEqual(["b"]);
+    expect(fallbackStore.mutationCount).toBe(0);
+  });
+
+  it("returns changed false when an owned unexpired notification is already deleted", async () => {
+    const fallbackStore = store();
+    const deletedAt = new Date("2026-08-24T15:40:00.000Z");
+    fallbackStore.notificationState.notifications = [{
+      id: "notification-1", userId: "recipient-1", type: NotificationType.MESSAGE_RECEIVED,
+      category: "MESSAGES", title: "Message", body: "Body", actionUrl: null,
+      entityType: "conversation", entityId: "conv-1", metadata: {}, dedupeKey: null,
+      aggregationKey: null, readAt: null, deletedAt,
+      expiresAt: new Date("2026-12-01T00:00:00.000Z"), createdAt: now, updatedAt: deletedAt,
+    }];
+
+    const result = await new JsonNotificationsRepository(fallbackStore)
+      .softDeleteOwned("recipient-1", "notification-1", now);
+
+    expect(result).toMatchObject({ changed: false, row: { id: "notification-1", deletedAt } });
   });
 });

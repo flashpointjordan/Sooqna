@@ -100,7 +100,7 @@ describe("PrismaMessagesRepository atomic message creation", () => {
 
     expect(result).toMatchObject({ created: true, message: { id: "msg-1", clientRequestId: "request-123" } });
     expect(run).toHaveBeenCalledTimes(1);
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
     expect(tx.message.create).toHaveBeenCalledTimes(1);
     expect(tx.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ id: "conv-1" }),

@@ -1,6 +1,4 @@
 import * as path from "node:path";
-import { open, unlink } from "node:fs/promises";
-import { setTimeout as delay } from "node:timers/promises";
 import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
 import { parseIso, toIso } from "../../../shared/utils/dates";
@@ -9,6 +7,7 @@ import type { Conversation, Message } from "../messages.types";
 import type { CreateMessageResult } from "../messages.types";
 import { Prisma } from "@prisma/client";
 import { PrismaTransactionRunner, type TransactionContext, type TransactionRunner } from "../../../shared/database/unitOfWork";
+import { withFileLock } from "../../../shared/database/fileLock";
 import type { EnqueueNotificationEventInput } from "../../notifications/notifications.producer";
 
 type AtomicMessageInput = {
@@ -61,22 +60,7 @@ export type JsonMessagesState = {
 let jsonMessageWriteQueue: Promise<void> = Promise.resolve();
 
 async function withJsonMessageFileLock<T>(work: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    try {
-      const handle = await open(messagesStateLockPath, "wx");
-      try {
-        return await work();
-      } finally {
-        await handle.close();
-        await unlink(messagesStateLockPath).catch(() => undefined);
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw error;
-      await delay(10);
-    }
-  }
-  throw new Error("Timed out waiting for the JSON message state lock.");
+  return withFileLock(messagesStateLockPath, work);
 }
 
 function serializeJsonMessageWrite<T>(work: () => Promise<T>): Promise<T> {
@@ -419,6 +403,10 @@ export class PrismaMessagesRepository implements MessagesRepository {
     }
 
     return this.transactions.run(async (tx) => {
+      const conversationScope = `conversation:${input.message.conversationId}`;
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${conversationScope}, 0))`
+      );
       const idempotencyScope = [
         input.message.conversationId,
         input.message.senderId,
@@ -444,7 +432,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
           id: input.conversation.id,
           OR: [
             { lastMessageAt: null },
-            { lastMessageAt: { lte: new Date(input.message.createdAt) } },
+            { lastMessageAt: { lt: new Date(input.message.createdAt) } },
           ],
         },
         data: conversationUpdateData(input.message),
@@ -513,7 +501,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
       const currentConversation = state.conversations[conversationIndex];
       if (
         !currentConversation.lastMessageAt ||
-        currentConversation.lastMessageAt <= input.message.createdAt
+        currentConversation.lastMessageAt < input.message.createdAt
       ) {
         state.conversations[conversationIndex] = {
           ...currentConversation,

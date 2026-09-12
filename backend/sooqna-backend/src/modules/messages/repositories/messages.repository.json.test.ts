@@ -94,4 +94,21 @@ describe("message JSON fallback atomicity", () => {
     const messages = await new PrismaMessagesRepository().listMessages("conv-1");
     expect(messages).toEqual([expect.objectContaining({ id: "msg-1", clientRequestId: null })]);
   });
+
+  it("keeps the first serialized conversation preview when distinct messages share a timestamp", async () => {
+    const repository = new PrismaMessagesRepository();
+    const secondMessage = { ...newMessage, id: "msg-2", clientRequestId: "request-456", text: "Second" };
+    await repository.createMessageAtomically(
+      { message: newMessage, conversation: newConversation, notifications: [] },
+      enqueueNotificationEvent
+    );
+    await repository.createMessageAtomically(
+      { message: secondMessage, conversation: { ...newConversation, lastMessageText: "Second" }, notifications: [] },
+      enqueueNotificationEvent
+    );
+
+    const state = (mockFiles.get("state") as any[])[0];
+    expect(state.messages).toHaveLength(2);
+    expect(state.conversations[0].lastMessageText).toBe("Hello");
+  });
 });

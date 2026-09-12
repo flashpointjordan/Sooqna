@@ -193,7 +193,7 @@ export class MessagesService {
 }
 
 const EMAIL_LIKE = /[^\s@]+@[^\s@]+\.[^\s@]+/gu;
-const SECRET_FRAGMENT = /["']?(?:password|token)["']?\s*(?:(?:=|:)\s*|\s+)["']?[^\s"',}]+["']?/giu;
+const SECRET_FRAGMENT = /["']?(?:password|token)["']?(?:(?:\s+is\s+)|(?:\s*[=:]\s*)|(?:\s+))["']?[^\s"',}]+["']?/giu;
 
 export function createSafeMessagePreview(value: string): string {
   const normalized = value

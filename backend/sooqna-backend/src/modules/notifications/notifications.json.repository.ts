@@ -6,6 +6,7 @@ import {
   type NotificationType,
 } from "@prisma/client";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fileStore";
+import { withFileLock } from "../../shared/database/fileLock";
 import {
   mutateJsonMessageFallbackState,
   type JsonMessagesState,
@@ -17,7 +18,7 @@ import type {
   OwnedNotificationMutation,
   StoredNotification,
 } from "./notifications.service";
-import type { NotificationListQuery } from "./notifications.types";
+import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
 import type {
   NotificationOutboxRecord,
   NotificationOutboxRepository,
@@ -30,6 +31,7 @@ type JsonNotificationState = {
 
 export interface JsonNotificationsStore {
   mutateMessageState<T>(work: (state: JsonMessagesState) => Promise<T> | T): Promise<T>;
+  readNotificationState(): Promise<JsonNotificationState>;
   mutateNotificationState<T>(work: (state: JsonNotificationState) => Promise<T> | T): Promise<T>;
 }
 
@@ -37,6 +39,7 @@ const notificationStatePath = path.resolve(
   process.cwd(),
   "src/modules/notifications/notifications-state.data.json"
 );
+const notificationStateLockPath = `${notificationStatePath}.lock`;
 let notificationStateQueue: Promise<void> = Promise.resolve();
 
 function hydrateNotification(row: StoredNotification): StoredNotification {
@@ -52,17 +55,21 @@ function hydrateNotification(row: StoredNotification): StoredNotification {
 
 const fileStore: JsonNotificationsStore = {
   mutateMessageState: mutateJsonMessageFallbackState,
+  async readNotificationState() {
+    const stored = readJsonArrayFile<JsonNotificationState>(notificationStatePath)[0];
+    return stored
+      ? { ...stored, notifications: stored.notifications.map(hydrateNotification) }
+      : { notifications: [], preferences: [] };
+  },
   mutateNotificationState<T>(work: (state: JsonNotificationState) => Promise<T> | T) {
     const run = async () => {
-      const stored = readJsonArrayFile<JsonNotificationState>(notificationStatePath)[0];
-      const state: JsonNotificationState = stored
-        ? { ...stored, notifications: stored.notifications.map(hydrateNotification) }
-        : { notifications: [], preferences: [] };
+      const state = await fileStore.readNotificationState();
       const result = await work(state);
       writeJsonArrayFileAtomically(notificationStatePath, [state]);
       return result;
     };
-    const result = notificationStateQueue.then(run, run);
+    const lockedRun = () => withFileLock(notificationStateLockPath, run);
+    const result = notificationStateQueue.then(lockedRun, lockedRun);
     notificationStateQueue = result.then(() => undefined, () => undefined);
     return result;
   },
@@ -156,26 +163,41 @@ export class JsonNotificationsRepository
     });
   }
 
-  listActive(userId: string, query: NotificationListQuery, now: Date) {
-    return this.store.mutateNotificationState((state) => {
+  async listActive(userId: string, query: NotificationListQuery, now: Date) {
+    const state = await this.store.readNotificationState();
       let rows = state.notifications.filter((row) => row.userId === userId && !row.deletedAt && row.expiresAt > now);
       if (query.category) rows = rows.filter((row) => row.category === query.category);
       if (query.unread !== undefined) rows = rows.filter((row) => query.unread ? !row.readAt : Boolean(row.readAt));
+      if (query.cursor) {
+        const cursor = decodeNotificationCursor(query.cursor);
+        const cursorDate = new Date(cursor.createdAt);
+        rows = rows.filter((row) =>
+          row.createdAt < cursorDate ||
+          (row.createdAt.getTime() === cursorDate.getTime() && row.id < cursor.id)
+        );
+      }
       rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
       const items = rows.slice(0, query.limit);
-      return { items, hasMore: rows.length > query.limit, nextCursor: null };
-    });
+      const hasMore = rows.length > query.limit;
+      const last = items.at(-1);
+      return {
+        items,
+        hasMore,
+        nextCursor: hasMore && last
+          ? encodeNotificationCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+          : null,
+      };
   }
 
-  countUnread(userId: string, now: Date) { return this.store.mutateNotificationState((state) => state.notifications.filter((row) => row.userId === userId && !row.readAt && !row.deletedAt && row.expiresAt > now).length); }
-  findActiveOwned(userId: string, id: string, now: Date) { return this.store.mutateNotificationState((state) => state.notifications.find((row) => row.id === id && row.userId === userId && !row.deletedAt && row.expiresAt > now) ?? null); }
+  async countUnread(userId: string, now: Date) { const state = await this.store.readNotificationState(); return state.notifications.filter((row) => row.userId === userId && !row.readAt && !row.deletedAt && row.expiresAt > now).length; }
+  async findActiveOwned(userId: string, id: string, now: Date) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.id === id && row.userId === userId && !row.deletedAt && row.expiresAt > now) ?? null; }
   markReadOwned(userId: string, id: string, now: Date) { return this.store.mutateNotificationState((state): OwnedNotificationMutation | null => { const row = state.notifications.find((item) => item.id === id && item.userId === userId && !item.deletedAt && item.expiresAt > now); if (!row) return null; const changed = !row.readAt; if (changed) { row.readAt = now; row.updatedAt = now; } return { row, changed }; }); }
   markAllRead(userId: string, now: Date) { return this.store.mutateNotificationState((state) => { let count = 0; for (const row of state.notifications) if (row.userId === userId && !row.readAt && !row.deletedAt && row.expiresAt > now) { row.readAt = now; row.updatedAt = now; count += 1; } return count; }); }
-  softDeleteOwned(userId: string, id: string, now: Date) { return this.store.mutateNotificationState((state): OwnedNotificationMutation | null => { const row = state.notifications.find((item) => item.id === id && item.userId === userId && !item.deletedAt && item.expiresAt > now); if (!row) return null; row.deletedAt = now; row.updatedAt = now; return { row, changed: true }; }); }
-  getPreferences(userId: string) { return this.store.mutateNotificationState((state) => state.preferences.filter((row) => row.userId === userId).map(({ category, enabled }) => ({ category, enabled }))); }
+  softDeleteOwned(userId: string, id: string, now: Date) { return this.store.mutateNotificationState((state): OwnedNotificationMutation | null => { const row = state.notifications.find((item) => item.id === id && item.userId === userId && item.expiresAt > now); if (!row) return null; if (row.deletedAt) return { row, changed: false }; row.deletedAt = now; row.updatedAt = now; return { row, changed: true }; }); }
+  async getPreferences(userId: string) { const state = await this.store.readNotificationState(); return state.preferences.filter((row) => row.userId === userId).map(({ category, enabled }) => ({ category, enabled })); }
   upsertPreferences(userId: string, values: Partial<Record<NotificationCategory, boolean>>) { return this.store.mutateNotificationState((state) => { for (const [category, enabled] of Object.entries(values)) { const existing = state.preferences.find((row) => row.userId === userId && row.category === category); if (existing) existing.enabled = Boolean(enabled); else state.preferences.push({ userId, category: category as NotificationCategory, enabled: Boolean(enabled) }); } return state.preferences.filter((row) => row.userId === userId).map(({ category, enabled }) => ({ category, enabled })); }); }
-  findByDedupeKey(dedupeKey: string) { return this.store.mutateNotificationState((state) => state.notifications.find((row) => row.dedupeKey === dedupeKey) ?? null); }
-  findCurrentAggregate(aggregationKey: string) { return this.store.mutateNotificationState((state) => state.notifications.find((row) => row.aggregationKey === aggregationKey && !row.deletedAt) ?? null); }
+  async findByDedupeKey(dedupeKey: string) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.dedupeKey === dedupeKey) ?? null; }
+  async findCurrentAggregate(aggregationKey: string) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.aggregationKey === aggregationKey && !row.deletedAt) ?? null; }
   create(input: NewNotification) { return this.store.mutateNotificationState((state) => { const row: StoredNotification = { ...input, id: `ntf_${randomUUID()}`, updatedAt: input.createdAt }; state.notifications.push(row); return row; }); }
   persistAggregate(input: NewNotification & { aggregationKey: string }) { return this.store.mutateNotificationState((state): AggregatePersistence => { const existing = state.notifications.find((row) => row.userId === input.userId && row.aggregationKey === input.aggregationKey && !row.deletedAt); if (existing) { Object.assign(existing, input, { updatedAt: input.createdAt, readAt: null }); return { row: existing, changed: true }; } const row: StoredNotification = { ...input, id: `ntf_${randomUUID()}`, updatedAt: input.createdAt }; state.notifications.push(row); return { row, changed: true }; }); }
   updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { return this.store.mutateNotificationState((state) => { const row = state.notifications.find((item) => item.id === id); if (!row) throw new Error("Notification not found"); Object.assign(row, input, { readAt: null }); return row; }); }

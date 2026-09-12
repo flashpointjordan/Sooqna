@@ -15,6 +15,14 @@ describe("createSafeMessagePreview", () => {
     expect(preview).not.toMatch(/hunter2|abc123|json-secret|example\.com/u);
   });
 
+  it("redacts natural-language password and token disclosures", () => {
+    const preview = createSafeMessagePreview(
+      "my password is hunter2 and the token is abc123"
+    );
+    expect(preview).not.toMatch(/hunter2|abc123/u);
+    expect(preview).toContain("[redacted]");
+  });
+
   it("caps previews at 120 Unicode code points without splitting surrogate pairs", () => {
     const preview = createSafeMessagePreview(`😀${"x".repeat(200)}`);
     expect(Array.from(preview)).toHaveLength(120);
