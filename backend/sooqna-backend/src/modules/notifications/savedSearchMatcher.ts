@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { buildListingSearchText, normalizeArabic } from "../../shared/utils/arabic";
+import { resolveCityId } from "../../shared/utils/city";
 import { enqueueNotificationEvent } from "./notifications.producer";
 import type { SavedSearchQueryFacts } from "./notifications.types";
 
@@ -51,7 +52,11 @@ export function matchesSavedSearch(listing: PublishedListingFacts, rawQuery: unk
   const query = canonicalSavedSearchQuery(rawQuery);
   if (query.q && !buildListingSearchText(listing.title, listing.description).includes(normalizeArabic(query.q))) return false;
   if (query.category && listing.categoryId.trim().toLowerCase() !== query.category) return false;
-  if (query.city && normalizeArabic(listing.locationCity) !== normalizeArabic(query.city)) return false;
+  if (query.city) {
+    const listingCity = resolveCityId(listing.locationCity) ?? normalizeArabic(listing.locationCity);
+    const queryCity = resolveCityId(query.city) ?? normalizeArabic(query.city);
+    if (listingCity !== queryCity) return false;
+  }
   if (query.condition && listing.condition.toLowerCase() !== query.condition) return false;
   if (query.priceMin !== undefined && listing.price < query.priceMin) return false;
   if (query.priceMax !== undefined && listing.price > query.priceMax) return false;

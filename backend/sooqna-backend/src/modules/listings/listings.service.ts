@@ -3,7 +3,8 @@ import { nowIso } from "../../utils/time";
 import { buildListingSearchText } from "../../shared/utils/arabic";
 import { AppError } from "../../shared/errors/appError";
 import { env } from "../../config/env";
-import { CATEGORY_IDS, CITY_IDS } from "../../shared/constants/domain";
+import { CATEGORY_IDS } from "../../shared/constants/domain";
+import { resolveCityId } from "../../shared/utils/city";
 import { PrismaUsersRepository } from "../users/repositories/users.repository";
 import { trackEngagementEvent } from "../engagement/engagement.service";
 import type { ListingsRepository, PaginationOptions } from "./repositories/listings.repository";
@@ -44,55 +45,8 @@ const MAX_IMAGES_PER_LISTING = 10;
 
 export class ListingsService {
   private readonly usersRepo = new PrismaUsersRepository();
-  private readonly cityAliases: Record<string, string> = {
-    aleppo: "aleppo",
-    "حلب": "aleppo",
-    damascus: "damascus",
-    "دمشق": "damascus",
-    rifdimashq: "rifdimashq",
-    "rif dimashq": "rifdimashq",
-    "rif-dimashq": "rifdimashq",
-    "ريف دمشق": "rifdimashq",
-    homs: "homs",
-    "حمص": "homs",
-    hama: "hama",
-    "حماة": "hama",
-    "حمأة": "hama",
-    latakia: "latakia",
-    "اللاذقية": "latakia",
-    "لاذقية": "latakia",
-    tartus: "tartus",
-    "طرطوس": "tartus",
-    idlib: "idlib",
-    "إدلب": "idlib",
-    "ادلب": "idlib",
-    daraa: "daraa",
-    "درعا": "daraa",
-    sweida: "sweida",
-    "السويداء": "sweida",
-    "السويدا": "sweida",
-    quneitra: "quneitra",
-    "القنيطرة": "quneitra",
-    deirezzor: "deirezzor",
-    "دير الزور": "deirezzor",
-    "ديرالزور": "deirezzor",
-    raqqa: "raqqa",
-    "الرقة": "raqqa",
-    alhasakah: "alhasakah",
-    "الحسكة": "alhasakah",
-    "الحسكه": "alhasakah",
-  };
-
-  /**
-   * Resolve a free-text city input (Arabic name, English name, or slug) to the
-   * canonical city id used for storage and filtering (e.g. "دمشق" → "damascus").
-   * Returns undefined when the value cannot be mapped to a known city.
-   */
   private resolveCityId(input?: string | null): string | undefined {
-    const key = input?.trim().toLowerCase() ?? "";
-    if (!key) return undefined;
-    const alias = this.cityAliases[key];
-    return alias && CITY_IDS.includes(alias as (typeof CITY_IDS)[number]) ? alias : undefined;
+    return resolveCityId(input);
   }
 
   constructor(private readonly repo: ListingsRepository) {}

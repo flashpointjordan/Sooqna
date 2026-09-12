@@ -42,9 +42,9 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
     const bounded = Math.max(1, Math.min(limit, 200));
     return prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{
-        id: string; eventType: NotificationOutboxRecord["eventType"]; aggregateType: string; aggregateId: string; recipientId: string | null; payload: unknown; dedupeKey: string; state: NotificationOutboxState; attempts: number; availableAt: Date; processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
+        id: string; eventType: NotificationOutboxRecord["eventType"]; aggregateType: string; aggregateId: string; recipientId: string | null; payload: unknown; dedupeKey: string; state: NotificationOutboxState; attempts: number; availableAt: Date; notificationAppliedAt: Date | null; processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
       }>>(Prisma.sql`
-        SELECT "id", "eventType", "aggregateType", "aggregateId", "recipientId", "payload", "dedupeKey", "state", "attempts", "availableAt", "processedAt", "lastError", "createdAt", "updatedAt"
+        SELECT "id", "eventType", "aggregateType", "aggregateId", "recipientId", "payload", "dedupeKey", "state", "attempts", "availableAt", "notificationAppliedAt", "processedAt", "lastError", "createdAt", "updatedAt"
         FROM "NotificationOutbox"
         WHERE "state" IN ('PENDING'::"NotificationOutboxState", 'FAILED'::"NotificationOutboxState")
           AND "availableAt" <= ${now}
@@ -115,16 +115,21 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
       if (input.dedupeKey) {
         const ledger = await tx.notificationOutbox.findUnique({ where: { dedupeKey: input.dedupeKey } });
         if (!ledger) throw new AppError(400, "Notification outbox event was not found.", "NOTIFICATION_EVENT_NOT_FOUND");
+        if (ledger.notificationAppliedAt) return existing ? { row: toStored(existing), changed: false } : null;
         if (ledger.state === NotificationOutboxState.PROCESSED) return existing ? { row: toStored(existing), changed: false } : null;
         if (ledger.state !== NotificationOutboxState.PENDING && ledger.state !== NotificationOutboxState.PROCESSING) return null;
       }
-      if (existing && isStaleAggregate(input.type, toStored(existing).metadata, input.metadata)) return { row: toStored(existing), changed: false };
+      if (existing && isStaleAggregate(input.type, toStored(existing).metadata, input.metadata)) {
+        if (input.dedupeKey) await tx.notificationOutbox.update({ where: { dedupeKey: input.dedupeKey }, data: { notificationAppliedAt: input.createdAt } });
+        return { row: toStored(existing), changed: false };
+      }
       const aggregateInput = existing && input.type === "SAVED_SEARCH_MATCHES"
         ? withSavedSearchAggregate(input, toStored(existing).metadata)
         : input;
       const result = existing
         ? toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: aggregateInput.title, body: aggregateInput.body, actionUrl: aggregateInput.actionUrl, metadata: aggregateInput.metadata as Prisma.InputJsonValue, expiresAt: aggregateInput.expiresAt, readAt: null } }))
         : toStored(await tx.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } }));
+      if (input.dedupeKey) await tx.notificationOutbox.update({ where: { dedupeKey: input.dedupeKey }, data: { notificationAppliedAt: input.createdAt } });
       return { row: result, changed: true };
     });
   }

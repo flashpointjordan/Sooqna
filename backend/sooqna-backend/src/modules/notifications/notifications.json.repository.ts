@@ -28,6 +28,7 @@ import { isStaleAggregate, mergeSavedSearchAggregate } from "./notifications.agg
 type JsonNotificationState = {
   notifications: StoredNotification[];
   preferences: Array<{ userId: string; category: NotificationCategory; enabled: boolean }>;
+  appliedAggregateEventKeys?: string[];
 };
 
 export interface JsonNotificationsStore {
@@ -59,8 +60,8 @@ const fileStore: JsonNotificationsStore = {
   async readNotificationState() {
     const stored = readJsonArrayFile<JsonNotificationState>(notificationStatePath)[0];
     return stored
-      ? { ...stored, notifications: stored.notifications.map(hydrateNotification) }
-      : { notifications: [], preferences: [] };
+      ? { ...stored, notifications: stored.notifications.map(hydrateNotification), appliedAggregateEventKeys: stored.appliedAggregateEventKeys ?? [] }
+      : { notifications: [], preferences: [], appliedAggregateEventKeys: [] };
   },
   mutateNotificationState<T>(work: (state: JsonNotificationState) => Promise<T> | T) {
     const run = async () => {
@@ -89,6 +90,7 @@ function outboxRecord(row: JsonOutbox): NotificationOutboxRecord {
     state: row.state as NotificationOutboxState,
     attempts: Number(row.attempts),
     availableAt: new Date(String(row.availableAt)),
+    notificationAppliedAt: row.notificationAppliedAt ? new Date(String(row.notificationAppliedAt)) : null,
     processedAt: row.processedAt ? new Date(String(row.processedAt)) : null,
     lastError: typeof row.lastError === "string" ? row.lastError : null,
     createdAt: new Date(String(row.createdAt)),
@@ -200,7 +202,25 @@ export class JsonNotificationsRepository
   async findByDedupeKey(dedupeKey: string) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.dedupeKey === dedupeKey) ?? null; }
   async findCurrentAggregate(aggregationKey: string) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.aggregationKey === aggregationKey && !row.deletedAt) ?? null; }
   create(input: NewNotification) { return this.store.mutateNotificationState((state) => { const row: StoredNotification = { ...input, id: `ntf_${randomUUID()}`, updatedAt: input.createdAt }; state.notifications.push(row); return row; }); }
-  persistAggregate(input: NewNotification & { aggregationKey: string }) { return this.store.mutateNotificationState((state): AggregatePersistence => { const existing = state.notifications.find((row) => row.userId === input.userId && row.aggregationKey === input.aggregationKey && !row.deletedAt); if (existing) { if (isStaleAggregate(input.type, existing.metadata, input.metadata)) return { row: existing, changed: false }; const merged = input.type === "SAVED_SEARCH_MATCHES" ? mergeSavedSearchInput(input, existing.metadata) : input; Object.assign(existing, merged, { updatedAt: input.createdAt, readAt: null }); return { row: existing, changed: true }; } const row: StoredNotification = { ...input, id: `ntf_${randomUUID()}`, updatedAt: input.createdAt }; state.notifications.push(row); return { row, changed: true }; }); }
+  persistAggregate(input: NewNotification & { aggregationKey: string }) { return this.store.mutateNotificationState((state): AggregatePersistence | null => {
+    state.appliedAggregateEventKeys ??= [];
+    const existing = state.notifications.find((row) => row.userId === input.userId && row.aggregationKey === input.aggregationKey && !row.deletedAt);
+    if (input.dedupeKey && state.appliedAggregateEventKeys.includes(input.dedupeKey)) return existing ? { row: existing, changed: false } : null;
+    if (existing) {
+      if (isStaleAggregate(input.type, existing.metadata, input.metadata)) {
+        if (input.dedupeKey) state.appliedAggregateEventKeys.push(input.dedupeKey);
+        return { row: existing, changed: false };
+      }
+      const merged = input.type === "SAVED_SEARCH_MATCHES" ? mergeSavedSearchInput(input, existing.metadata) : input;
+      Object.assign(existing, merged, { updatedAt: input.createdAt, readAt: null });
+      if (input.dedupeKey) state.appliedAggregateEventKeys.push(input.dedupeKey);
+      return { row: existing, changed: true };
+    }
+    const row: StoredNotification = { ...input, id: `ntf_${randomUUID()}`, updatedAt: input.createdAt };
+    state.notifications.push(row);
+    if (input.dedupeKey) state.appliedAggregateEventKeys.push(input.dedupeKey);
+    return { row, changed: true };
+  }); }
   updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { return this.store.mutateNotificationState((state) => { const row = state.notifications.find((item) => item.id === id); if (!row) throw new Error("Notification not found"); Object.assign(row, input, { readAt: null }); return row; }); }
 }
 

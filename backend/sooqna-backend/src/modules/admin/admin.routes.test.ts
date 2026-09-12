@@ -391,6 +391,63 @@ describe("admin routes", () => {
     expect(mockPrisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
   });
 
+  it("rolls back a moderation transition and log when notification enqueue fails", async () => {
+    mockUser(Role.ADMIN);
+    const db = {
+      listing: { status: "pending" },
+      logs: [] as string[],
+    };
+    mockPrisma.listing.findUnique.mockImplementation(async () => ({
+      id: "lst-rollback", status: db.listing.status, ownerId: "seller-1", title: "Rollback item",
+      description: "Description", categoryId: "other", locationCity: "damascus", condition: "used", price: 10,
+    }));
+    mockPrisma.listing.update.mockImplementation(async () => {
+      db.listing.status = "rejected";
+      return { id: "lst-rollback", title: "Rollback item", ownerId: "seller-1", status: "rejected", isFeatured: false, isApproved: false, publishedAt: null, archivedAt: null, soldAt: null, updatedAt: new Date("2026-01-02T00:00:00.000Z") };
+    });
+    mockPrisma.listingModerationLog.create.mockImplementation(async () => { db.logs.push("reject"); return {}; });
+    mockPrisma.notificationOutbox.upsert.mockRejectedValueOnce(new Error("outbox unavailable"));
+    mockPrisma.$transaction.mockImplementationOnce(async (work: (tx: typeof mockPrisma) => Promise<unknown>) => {
+      const snapshot = { status: db.listing.status, logs: [...db.logs] };
+      try { return await work(mockPrisma); }
+      catch (error) { db.listing.status = snapshot.status; db.logs = snapshot.logs; throw error; }
+    });
+
+    const response = await request(app)
+      .post("/api/admin/listings/lst-rollback/reject")
+      .set("Authorization", "Bearer admin-token")
+      .send({ reason: "Policy violation" });
+
+    expect(response.status).toBe(500);
+    expect(db).toEqual({ listing: { status: "pending" }, logs: [] });
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("bulk moderation logs and emits only rows that confirm a state transition", async () => {
+    mockUser(Role.ADMIN);
+    mockPrisma.listing.findMany.mockResolvedValueOnce([
+      { id: "lst-transitioned", status: "pending", ownerId: "seller-1", title: "One", description: "", categoryId: "other", locationCity: "damascus", condition: "used", price: 10 },
+      { id: "lst-raced", status: "pending", ownerId: "seller-2", title: "Two", description: "", categoryId: "other", locationCity: "damascus", condition: "used", price: 20 },
+    ]);
+    mockPrisma.listing.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+    mockPrisma.listingModerationLog.createMany.mockResolvedValue({ count: 1 });
+
+    const response = await request(app)
+      .post("/api/admin/moderation/listings/bulk")
+      .set("Authorization", "Bearer admin-token")
+      .send({ ids: ["lst-transitioned", "lst-raced"], action: "publish" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.updatedCount).toBe(1);
+    expect(mockPrisma.listingModerationLog.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ listingId: "lst-transitioned", previousStatus: "pending", newStatus: "published" })],
+    });
+    expect(mockPrisma.notificationOutbox.upsert).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.notificationOutbox.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ aggregateId: "lst-transitioned" }),
+    }));
+  });
+
   it("allows admins to manage cities", async () => {
     mockUser(Role.ADMIN);
     const createdAt = new Date("2026-01-01T00:00:00.000Z");

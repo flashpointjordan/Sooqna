@@ -16,6 +16,7 @@ class MemoryRepo implements NotificationsRepository {
   rows: StoredNotification[] = [];
   preferences = new Map<string, boolean>();
   outboxEvents = new Map<string, "PENDING" | "PROCESSING" | "PROCESSED">();
+  appliedAggregateEvents = new Set<string>();
   async listActive(userId: string, query: { limit: number; cursor?: string; category?: NotificationCategory; unread?: boolean }, at: Date) {
     let rows = this.rows.filter((row) => row.userId === userId && !row.deletedAt && row.expiresAt > at && (!query.category || row.category === query.category) && (query.unread === undefined || (query.unread ? !row.readAt : !!row.readAt)));
     rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
@@ -33,7 +34,7 @@ class MemoryRepo implements NotificationsRepository {
   async findByDedupeKey(key: string) { return this.rows.find((row) => row.dedupeKey === key) ?? null; }
   async findCurrentAggregate(key: string) { return this.rows.find((row) => row.aggregationKey === key && !row.deletedAt) ?? null; }
   async create(input: Omit<StoredNotification, "id" | "updatedAt">) { const row = active(`n-${this.rows.length + 1}`, { ...input, updatedAt: input.createdAt }); this.rows.push(row); return row; }
-  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && !this.outboxEvents.has(input.dedupeKey)) throw Object.assign(new Error("outbox missing"), { code: "NOTIFICATION_EVENT_NOT_FOUND" }); if (input.dedupeKey && this.outboxEvents.get(input.dedupeKey) === "PROCESSED") return { row: row!, changed: false }; if (row) { const next = input.type === NotificationType.SAVED_SEARCH_MATCHES ? { ...input, metadata: mergeSavedSearchAggregate(row.metadata, input.metadata) } : input; if (next.type === NotificationType.SAVED_SEARCH_MATCHES) next.body = `وجدنا ${next.metadata.totalCount} نتيجة جديدة`; Object.assign(row, { ...next, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create(input), changed: true }; }
+  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && !this.outboxEvents.has(input.dedupeKey)) throw Object.assign(new Error("outbox missing"), { code: "NOTIFICATION_EVENT_NOT_FOUND" }); if (input.dedupeKey && this.outboxEvents.get(input.dedupeKey) === "PROCESSED") return { row: row!, changed: false }; if (input.dedupeKey && this.appliedAggregateEvents.has(input.dedupeKey)) return row ? { row, changed: false } : null; if (row) { const next = input.type === NotificationType.SAVED_SEARCH_MATCHES ? { ...input, metadata: mergeSavedSearchAggregate(row.metadata, input.metadata) } : input; if (next.type === NotificationType.SAVED_SEARCH_MATCHES) next.body = `وجدنا ${next.metadata.totalCount} نتيجة جديدة`; Object.assign(row, { ...next, dedupeKey: row.dedupeKey, readAt: null }); if (input.dedupeKey) this.appliedAggregateEvents.add(input.dedupeKey); return { row, changed: true }; } const created = await this.create(input); if (input.dedupeKey) this.appliedAggregateEvents.add(input.dedupeKey); return { row: created, changed: true }; }
   async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { const row = this.rows.find((item) => item.id === id)!; Object.assign(row, input, { readAt: null }); return row; }
 }
 
@@ -178,5 +179,21 @@ describe("NotificationsService", () => {
     expect(repo.rows[0].metadata.totalCount).toBe(12);
     expect(repo.rows[0].metadata.matchingListingIds).toEqual(Array.from({ length: 10 }, (_, index) => `listing-${index + 1}`));
     expect(repo.rows[0].body).toContain("12");
+  });
+
+  it("does not double-count saved-search event B when signal publication fails then B retries", async () => {
+    const repo = new MemoryRepo();
+    repo.outboxEvents.set("B", "PROCESSING");
+    const publishSignal = jest.fn().mockRejectedValueOnce(new Error("signal failed")).mockResolvedValue(undefined);
+    const service = new NotificationsService(repo, { now: () => now, publishSignal });
+    const event = {
+      eventType: NotificationType.SAVED_SEARCH_MATCHES,
+      recipientId: "user-a", savedSearchId: "search-1", savedSearchName: "Laptops", query: {},
+      matchingListingIds: ["listing-b"], totalCount: 1,
+    };
+    await expect(service.createFromEvent(NotificationType.SAVED_SEARCH_MATCHES, event, { aggregationKey: "saved:user-a:search-1:hour", dedupeKey: "B" })).rejects.toThrow("signal failed");
+    await expect(service.createFromEvent(NotificationType.SAVED_SEARCH_MATCHES, event, { aggregationKey: "saved:user-a:search-1:hour", dedupeKey: "B" })).resolves.toMatchObject({ metadata: { totalCount: 1 } });
+    expect(repo.rows[0].metadata).toMatchObject({ totalCount: 1, matchingListingIds: ["listing-b"] });
+    expect(publishSignal).toHaveBeenCalledTimes(1);
   });
 });

@@ -80,6 +80,55 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     expect(mockNotificationCreate).not.toHaveBeenCalled(); expect(mockNotificationUpdate).not.toHaveBeenCalled();
   });
 
+  it("marks an aggregate event applied in the same transaction and skips its retry before outbox processing", async () => {
+    mockNotificationFindFirst.mockResolvedValue(row);
+    mockNotificationUpdate.mockResolvedValue({ ...row, metadata: { ...row.metadata, totalCount: 2 } });
+    mockOutboxFindUnique
+      .mockResolvedValueOnce({ id: "outbox-b", state: "PROCESSING", notificationAppliedAt: null })
+      .mockResolvedValueOnce({ id: "outbox-b", state: "PROCESSING", notificationAppliedAt: new Date("2026-08-24T12:00:00.000Z") });
+    mockOutboxUpdate.mockResolvedValue({});
+    const repository = new PrismaNotificationsRepository();
+    const input = {
+      userId: row.userId, type: NotificationType.SAVED_SEARCH_MATCHES,
+      category: NotificationCategory.SAVED_SEARCHES, title: "matches", body: "matches",
+      actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId,
+      metadata: { savedSearchName: "Laptops", totalCount: 1, matchingListingIds: ["listing-b"] },
+      dedupeKey: "event-b", aggregationKey: "saved:user-a:search-1:hour",
+      readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt,
+    };
+
+    await expect(repository.persistAggregate(input)).resolves.toMatchObject({ changed: true });
+    await expect(repository.persistAggregate(input)).resolves.toMatchObject({ changed: false });
+
+    expect(mockNotificationUpdate).toHaveBeenCalledTimes(1);
+    expect(mockOutboxUpdate).toHaveBeenCalledTimes(1);
+    expect(mockOutboxUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: { dedupeKey: "event-b" },
+      data: { notificationAppliedAt: expect.any(Date) },
+    }));
+  });
+
+  it("tracks applied aggregate events durably in the JSON notification state", async () => {
+    const aggregate = { ...row, type: NotificationType.SAVED_SEARCH_MATCHES, category: NotificationCategory.SAVED_SEARCHES, metadata: { savedSearchName: "Laptops", totalCount: 1, matchingListingIds: ["listing-a"] } };
+    const state = { notifications: [aggregate], preferences: [], appliedAggregateEventKeys: [] as string[] };
+    const store = {
+      readNotificationState: jest.fn(async () => state),
+      mutateNotificationState: jest.fn(async (work: (value: typeof state) => unknown) => work(state)),
+    } as unknown as JsonNotificationsStore;
+    const repository = new JsonNotificationsRepository(store);
+    const input = {
+      ...aggregate,
+      metadata: { savedSearchName: "Laptops", totalCount: 1, matchingListingIds: ["listing-b"] },
+      dedupeKey: "event-b",
+    };
+
+    await expect(repository.persistAggregate(input)).resolves.toMatchObject({ changed: true });
+    await expect(repository.persistAggregate(input)).resolves.toMatchObject({ changed: false });
+
+    expect(state.notifications[0].metadata).toMatchObject({ totalCount: 2, matchingListingIds: ["listing-a", "listing-b"] });
+    expect(state.appliedAggregateEventKeys).toEqual(["event-b"]);
+  });
+
   it("does not let an older favorite aggregate overwrite a newer persisted count", async () => {
     const newer = { ...row, metadata: { listingId: "listing-1", favoriteCount: 9, sourceTimestamp: "2026-08-24T15:55:00.000Z" } };
     mockNotificationFindFirst.mockResolvedValue(newer);

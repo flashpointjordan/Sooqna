@@ -3,6 +3,7 @@ import {
   moderationNotification,
   parseRejectionReason,
   runListingLifecycle,
+  runJsonListingLifecycleState,
 } from "./listingNotificationProducers";
 import {
   enqueueSavedSearchMatchesForListing,
@@ -79,6 +80,37 @@ describe("listing notification producers", () => {
     expect(matchesSavedSearch(listing, { q: "شقه", city: "عمان", category: "HOMES", priceMin: 200, maxPrice: 300, condition: "used" })).toBe(true);
     expect(matchesSavedSearch(listing, { q: "سيارة" })).toBe(false);
     expect(matchesSavedSearch(listing, { minPrice: 300 })).toBe(false);
+  });
+
+  test.each([
+    ["دمشق", "damascus"],
+    ["Damascus", "damascus"],
+    ["rif-dimashq", "rifdimashq"],
+  ])("matches saved-search city %s through the canonical listing city resolver", (savedCity, storedCity) => {
+    const listing = {
+      id: "listing-city", title: "Home", description: "Nice", categoryId: "homes",
+      locationCity: storedCity, condition: "used", price: 250, ownerId: "seller",
+      publishedAt: new Date("2026-09-12T08:00:00.000Z"),
+    };
+    expect(matchesSavedSearch(listing, { city: savedCity })).toBe(true);
+  });
+
+  test("archives and emits lifecycle events with matching JSON fallback semantics", () => {
+    const state = {
+      listings: [
+        { id: "warning", ownerId: "u1", title: "Soon", status: "published", expiresAt: "2026-09-14T10:00:00.000Z", isFeatured: true, archivedAt: null, updatedAt: "2026-09-01T00:00:00.000Z" },
+        { id: "expired", ownerId: "u2", title: "Gone", status: "published", expiresAt: "2026-09-12T07:00:00.000Z", isFeatured: true, archivedAt: null, updatedAt: "2026-09-01T00:00:00.000Z" },
+      ],
+      notificationOutbox: [] as Array<Record<string, unknown>>,
+    };
+    expect(runJsonListingLifecycleState(state, new Date("2026-09-12T08:00:00.000Z"))).toEqual({ expiring: 1, expired: 1 });
+    expect(state.listings[1]).toMatchObject({ status: "archived", isFeatured: false, archivedAt: "2026-09-12T08:00:00.000Z" });
+    expect(state.notificationOutbox.map((row) => row.dedupeKey)).toEqual([
+      "listing-expiring:warning:2026-09-12",
+      "listing-expired:expired:2026-09-12T07:00:00.000Z",
+    ]);
+    expect(runJsonListingLifecycleState(state, new Date("2026-09-12T09:00:00.000Z"))).toEqual({ expiring: 0, expired: 0 });
+    expect(state.notificationOutbox).toHaveLength(2);
   });
 
   test("pages saved searches and emits hourly aggregate facts with bounded ids", async () => {

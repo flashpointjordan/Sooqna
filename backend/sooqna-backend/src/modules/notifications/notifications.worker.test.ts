@@ -62,7 +62,9 @@ describe("notification outbox worker", () => {
       runLifecycle: async () => { throw new Error("lifecycle unavailable"); },
     });
     await worker.runOnce();
+    await worker.runOnce();
     expect(repo.marks).toEqual([{ id: "outbox-1", state: "PROCESSED" }]);
+    expect(logger.error).toHaveBeenCalledTimes(2);
     expect(logger.error).toHaveBeenCalledWith("Listing notification lifecycle failed.", { error: "lifecycle unavailable" });
   });
 

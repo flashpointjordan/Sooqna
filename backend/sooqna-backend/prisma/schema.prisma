@@ -131,20 +131,21 @@ model NotificationPreference {
 }
 
 model NotificationOutbox {
-  id            String                  @id @default(cuid())
-  eventType     NotificationType
-  aggregateType String
-  aggregateId   String
-  recipientId   String?
-  payload       Json
-  dedupeKey     String                  @unique
-  state         NotificationOutboxState @default(PENDING)
-  attempts      Int                     @default(0)
-  availableAt   DateTime                @default(now())
-  processedAt   DateTime?
-  lastError     String?
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
+  id                    String                  @id @default(cuid())
+  eventType             NotificationType
+  aggregateType         String
+  aggregateId           String
+  recipientId           String?
+  payload               Json
+  dedupeKey             String                  @unique
+  state                 NotificationOutboxState @default(PENDING)
+  attempts              Int                     @default(0)
+  availableAt           DateTime                @default(now())
+  notificationAppliedAt DateTime?
+  processedAt           DateTime?
+  lastError             String?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
 
   @@index([state, availableAt, createdAt])
 }

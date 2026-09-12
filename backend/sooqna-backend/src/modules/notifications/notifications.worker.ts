@@ -6,7 +6,7 @@ import type { NotificationEventPayload } from "./notifications.types";
 export type NotificationOutboxRecord = {
   id: string; eventType: NotificationType; aggregateType: string; aggregateId: string; recipientId: string | null;
   payload: unknown; dedupeKey: string; state: NotificationOutboxState; attempts: number; availableAt: Date;
-  processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
+  notificationAppliedAt?: Date | null; processedAt: Date | null; lastError: string | null; createdAt: Date; updatedAt: Date;
   claimAttempt: number;
 };
 
@@ -71,8 +71,10 @@ export function createNotificationWorker(deps: WorkerDeps) {
     const recoveredAt = now();
     const currentHour = recoveredAt.toISOString().slice(0, 13);
     if (deps.runLifecycle && lifecycleHour !== currentHour) {
-      lifecycleHour = currentHour;
-      try { await deps.runLifecycle(recoveredAt); }
+      try {
+        await deps.runLifecycle(recoveredAt);
+        lifecycleHour = currentHour;
+      }
       catch (error) { deps.logger?.error("Listing notification lifecycle failed.", { error: errorMessage(error) }); }
     }
     const recovery = await deps.repository.recoverStaleProcessing(recoveredAt, new Date(recoveredAt.getTime() - STALE_PROCESSING_MS));

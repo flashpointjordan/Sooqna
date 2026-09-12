@@ -1,5 +1,8 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import * as path from "node:path";
 import { AppError } from "../../shared/errors/appError";
+import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fileStore";
+import { mutateJsonMessageFallbackState } from "../messages/repositories/messages.repository";
 import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "./notifications.producer";
 
 export type ModerationAction = "publish" | "reject" | "archive" | "sold" | "feature" | "unfeature";
@@ -150,4 +153,99 @@ export async function runListingLifecycle(
     if (!cursor) break;
   }
   return { expiring, expired };
+}
+
+type JsonLifecycleListing = {
+  id: string;
+  ownerId: string | null;
+  title: string;
+  status: string;
+  expiresAt: string | null;
+  isFeatured: boolean;
+  archivedAt: string | null;
+  updatedAt: string;
+  locationCity?: string;
+};
+type JsonLifecycleState = {
+  listings: JsonLifecycleListing[];
+  notificationOutbox: Array<Record<string, unknown>>;
+};
+
+function enqueueJsonLifecycleEvent(
+  state: JsonLifecycleState,
+  input: EnqueueNotificationEventInput,
+  now: Date
+): boolean {
+  if (state.notificationOutbox.some((row) => row.dedupeKey === input.dedupeKey)) return false;
+  state.notificationOutbox.push({
+    id: `outbox_${input.dedupeKey}`,
+    eventType: input.payload.eventType,
+    aggregateType: input.aggregateType,
+    aggregateId: input.aggregateId,
+    recipientId: input.recipientId ?? null,
+    payload: input.payload,
+    dedupeKey: input.dedupeKey,
+    state: "PENDING",
+    attempts: 0,
+    availableAt: now.toISOString(),
+    notificationAppliedAt: null,
+    processedAt: null,
+    lastError: null,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  return true;
+}
+
+/** Applies the same expiry transitions and deterministic events in fallback storage. */
+export function runJsonListingLifecycleState(
+  state: JsonLifecycleState,
+  now = new Date(),
+  options: { warningDays?: number } = {}
+): { expiring: number; expired: number } {
+  const warningDays = Math.max(1, Math.min(options.warningDays ?? 3, 30));
+  const warningEnd = new Date(now.getTime() + warningDays * 86_400_000);
+  const utcDay = now.toISOString().slice(0, 10);
+  let expiring = 0;
+  let expired = 0;
+  for (const listing of state.listings) {
+    if (listing.status !== "published" || !listing.ownerId || !listing.expiresAt) continue;
+    const expiresAt = new Date(listing.expiresAt);
+    if (!Number.isFinite(expiresAt.getTime()) || expiresAt > warningEnd) continue;
+    if (expiresAt <= now) {
+      const enqueued = enqueueJsonLifecycleEvent(state, {
+        aggregateType: "listing",
+        aggregateId: listing.id,
+        recipientId: listing.ownerId,
+        dedupeKey: `listing-expired:${listing.id}:${expiresAt.toISOString()}`,
+        payload: { eventType: "LISTING_EXPIRED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title },
+      }, now);
+      if (!enqueued) continue;
+      listing.status = "archived";
+      listing.isFeatured = false;
+      listing.archivedAt = now.toISOString();
+      listing.updatedAt = now.toISOString();
+      expired += 1;
+      continue;
+    }
+    if (enqueueJsonLifecycleEvent(state, {
+      aggregateType: "listing",
+      aggregateId: listing.id,
+      recipientId: listing.ownerId,
+      dedupeKey: `listing-expiring:${listing.id}:${utcDay}`,
+      payload: { eventType: "LISTING_EXPIRING", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title, expiresAt: expiresAt.toISOString() },
+    }, now)) expiring += 1;
+  }
+  return { expiring, expired };
+}
+
+const fallbackListingsPath = path.resolve(process.cwd(), "src/modules/listings/repositories/listings.data.json");
+
+export function runJsonListingLifecycle(now = new Date()): Promise<{ expiring: number; expired: number }> {
+  return mutateJsonMessageFallbackState((messageState) => {
+    const listings = readJsonArrayFile<JsonLifecycleListing>(fallbackListingsPath);
+    const result = runJsonListingLifecycleState({ listings, notificationOutbox: messageState.notificationOutbox }, now);
+    writeJsonArrayFileAtomically(fallbackListingsPath, listings);
+    return result;
+  });
 }

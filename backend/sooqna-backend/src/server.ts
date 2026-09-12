@@ -6,7 +6,7 @@ import { prisma } from "./config/prisma";
 import { createNotificationsRepository } from "./modules/notifications/notifications.repository";
 import { NotificationsService } from "./modules/notifications/notifications.service";
 import { createNotificationWorker } from "./modules/notifications/notifications.worker";
-import { runListingLifecycle } from "./modules/notifications/listingNotificationProducers";
+import { runJsonListingLifecycle, runListingLifecycle } from "./modules/notifications/listingNotificationProducers";
 import { createNotificationPublisher, NotificationBroker, setNotificationBroker, setNotificationPublisher } from "./modules/notifications/notifications.broker";
 
 type LifecycleDependencies = {
@@ -29,7 +29,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
     logger,
     ...(!env.enableCategoriesJsonFallback || env.databaseUrl
       ? { runLifecycle: async (now: Date) => { await runListingLifecycle(prisma, now); } }
-      : {}),
+      : { runLifecycle: async (now: Date) => { await runJsonListingLifecycle(now); } }),
   });
   let server: Server | undefined;
   let stopping: Promise<void> | undefined;

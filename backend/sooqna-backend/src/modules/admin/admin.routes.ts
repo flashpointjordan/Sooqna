@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { Prisma, Role } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { env } from "../../config/env";
@@ -881,12 +881,18 @@ async function moderateListing(req: Request, res: Response, action: ModerationAc
   });
 }
 
-adminRouter.post("/listings/:id/publish", (req, res) => void moderateListing(req, res, "publish"));
-adminRouter.post("/listings/:id/reject", (req, res) => void moderateListing(req, res, "reject"));
-adminRouter.post("/listings/:id/archive", (req, res) => void moderateListing(req, res, "archive"));
-adminRouter.post("/listings/:id/sold", (req, res) => void moderateListing(req, res, "sold"));
-adminRouter.post("/listings/:id/feature", (req, res) => void moderateListing(req, res, "feature"));
-adminRouter.post("/listings/:id/unfeature", (req, res) => void moderateListing(req, res, "unfeature"));
+function moderationHandler(action: ModerationAction) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    void moderateListing(req, res, action).catch(next);
+  };
+}
+
+adminRouter.post("/listings/:id/publish", moderationHandler("publish"));
+adminRouter.post("/listings/:id/reject", moderationHandler("reject"));
+adminRouter.post("/listings/:id/archive", moderationHandler("archive"));
+adminRouter.post("/listings/:id/sold", moderationHandler("sold"));
+adminRouter.post("/listings/:id/feature", moderationHandler("feature"));
+adminRouter.post("/listings/:id/unfeature", moderationHandler("unfeature"));
 
 adminRouter.post("/moderation/listings/bulk", async (req, res) => {
   const ids = Array.isArray(req.body?.ids)
@@ -922,12 +928,18 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
       },
     });
     if (!previousListings.length) throw new AppError(404, "No listings found.", "NOT_FOUND");
-    await tx.listing.updateMany({
-      where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null },
-      data: updateData,
-    });
+    const transitionedListings = [];
+    for (const listing of previousListings) {
+      if (listing.status === newStatus) continue;
+      const result = await tx.listing.updateMany({
+        where: { id: listing.id, deletedAt: null, status: listing.status },
+        data: updateData,
+      });
+      if (result.count === 1) transitionedListings.push(listing);
+    }
+    if (!transitionedListings.length) return 0;
     await tx.listingModerationLog.createMany({
-      data: previousListings.map((listing) => ({
+      data: transitionedListings.map((listing) => ({
         id: generateId("mlog"),
         listingId: listing.id,
         adminUserId,
@@ -938,7 +950,7 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
         createdAt: now,
       })),
     });
-    for (const listing of previousListings) {
+    for (const listing of transitionedListings) {
       await enqueueModerationNotification(action, listing, now, reason, tx);
       if (action === "publish") {
         await enqueueSavedSearchMatchesForListing({
@@ -949,7 +961,7 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
         }, tx);
       }
     }
-    return previousListings.length;
+    return transitionedListings.length;
   });
   await logAuditEvent({
     actorId: adminUserId,

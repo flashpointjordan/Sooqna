@@ -67,6 +67,7 @@ CREATE TABLE "NotificationOutbox" (
     "state" "NotificationOutboxState" NOT NULL DEFAULT 'PENDING',
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "availableAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "notificationAppliedAt" TIMESTAMP(3),
     "processedAt" TIMESTAMP(3),
     "lastError" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
