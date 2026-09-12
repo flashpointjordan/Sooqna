@@ -130,7 +130,7 @@ function parsePayload(value: unknown): NotificationEventPayload {
     MESSAGE_RECEIVED: ["conversationId", "messageId", "senderId", "senderName", "listingId", "messagePreview"],
     LISTING_APPROVED: ["listingId", "listingTitle"], LISTING_REJECTED: ["listingId", "listingTitle", "rejectionReason"],
     LISTING_EXPIRING: ["listingId", "listingTitle", "expiresAt"], LISTING_EXPIRED: ["listingId", "listingTitle"],
-    LISTING_FAVORITED_AGGREGATE: ["listingId", "listingTitle"], REVIEW_RECEIVED: ["reviewId", "reviewerId", "reviewerName", "listingId", "listingTitle"],
+    LISTING_FAVORITED_AGGREGATE: ["listingId", "listingTitle", "sourceTimestamp"], REVIEW_RECEIVED: ["reviewId", "reviewerId", "reviewerName", "listingId", "listingTitle"],
     SAVED_SEARCH_MATCHES: ["savedSearchId", "savedSearchName"], SYSTEM_ANNOUNCEMENT: ["announcementId", "title", "body"], SECURITY_ALERT: ["alertId"],
   };
   if (stringFields[payload.eventType as NotificationType].some((field) => typeof payload[field] !== "string")) throw new AppError(400, "Invalid notification outbox payload.", "VALIDATION_ERROR");

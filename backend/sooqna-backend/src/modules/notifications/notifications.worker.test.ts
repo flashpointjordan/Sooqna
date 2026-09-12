@@ -84,7 +84,7 @@ describe("notification outbox worker", () => {
     expect(notifications.signalPersisted).not.toHaveBeenCalled();
     expect(repo.rows[0].state).toBe(NotificationOutboxState.PROCESSED);
 
-    repo.rows = [event({ eventType: NotificationType.LISTING_FAVORITED_AGGREGATE, payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", favoriteCount: 2 } })];
+    repo.rows = [event({ eventType: NotificationType.LISTING_FAVORITED_AGGREGATE, payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", favoriteCount: 2, sourceTimestamp: "2026-08-24T09:59:00.000Z" } })];
     notifications.persistFromEvent.mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: false });
     await worker.runOnce();
     expect(notifications.signalPersisted).not.toHaveBeenCalled();
@@ -137,7 +137,7 @@ describe("notification outbox worker", () => {
   });
 
   test("re-publishes an aggregate notification after signal failure before processing it", async () => {
-    const repo = new FakeOutboxRepository([event({ eventType: NotificationType.LISTING_FAVORITED_AGGREGATE, payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", favoriteCount: 2 } })]);
+    const repo = new FakeOutboxRepository([event({ eventType: NotificationType.LISTING_FAVORITED_AGGREGATE, payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop", favoriteCount: 2, sourceTimestamp: "2026-08-24T09:59:00.000Z" } })]);
     const notifications = service();
     notifications.persistFromEvent.mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: true }).mockResolvedValueOnce({ row: { id: "notification-1", userId: "user-1" }, changed: false });
     const publishSignal = jest.fn().mockRejectedValueOnce(new Error("broker offline")).mockResolvedValueOnce(undefined);

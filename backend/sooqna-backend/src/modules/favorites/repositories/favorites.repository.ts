@@ -2,11 +2,16 @@ import * as path from "node:path";
 import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
 import { readJsonArrayFile, writeJsonArrayFile } from "../../../utils/fileStore";
+import { generateId } from "../../../utils/ids";
 import type { FavoriteRecord } from "../favorites.types";
+
+export type FavoriteUpsertResult =
+  | { created: true; sourceId: string; sourceTimestamp: string }
+  | { created: false };
 
 export interface FavoritesRepository {
   listByUser(userId: string): Promise<FavoriteRecord[]>;
-  upsert(record: FavoriteRecord): Promise<{ created: boolean }>;
+  upsert(record: FavoriteRecord): Promise<FavoriteUpsertResult>;
   remove(userId: string, listingId: string): Promise<void>;
   countByListing(listingId: string): Promise<number>;
 }
@@ -43,28 +48,35 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
     }
   }
 
-  async upsert(record: FavoriteRecord): Promise<{ created: boolean }> {
+  async upsert(record: FavoriteRecord): Promise<FavoriteUpsertResult> {
     try {
-      const result = await prisma.favorite.createMany({
+      const created = await prisma.favorite.create({
         data: {
           userId: record.userId,
           listingId: record.listingId,
           createdAt: new Date(record.createdAt),
         },
-        skipDuplicates: true,
+        select: { id: true, createdAt: true },
       });
-      return { created: result.count === 1 };
+      return {
+        created: true,
+        sourceId: created.id,
+        sourceTimestamp: created.createdAt.toISOString(),
+      };
     } catch (error) {
+      if (isUniqueConflict(error)) return { created: false };
       if (useJsonFallback()) {
         const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
         const exists = items.some(
           (item) => item.userId === record.userId && item.listingId === record.listingId
         );
         if (!exists) {
-          items.push(record);
+          const sourceId = generateId("fav");
+          items.push({ ...record, id: sourceId });
           writeJsonArrayFile(favoritesDataPath, items);
+          return { created: true, sourceId, sourceTimestamp: record.createdAt };
         }
-        return { created: !exists };
+        return { created: false };
       }
       throw new Error("Failed to save favorite.", { cause: error });
     }
@@ -101,5 +113,10 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
       throw new Error("Failed to count favorites.", { cause: error });
     }
   }
+}
+
+function isUniqueConflict(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as { code?: unknown }).code === "P2002";
 }
 

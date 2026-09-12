@@ -18,7 +18,7 @@ jest.mock("../../config/env", () => ({
   env: { enableCategoriesJsonFallback: false, databaseUrl: "postgresql://test" },
 }));
 
-import { PrismaNotificationsRepository } from "./notifications.repository";
+import { JsonNotificationsRepository, PrismaNotificationsRepository, type JsonNotificationsStore } from "./notifications.repository";
 
 const row = {
   id: "aggregate", userId: "user-a", type: NotificationType.LISTING_FAVORITED_AGGREGATE, category: NotificationCategory.ENGAGEMENT,
@@ -78,5 +78,91 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     mockNotificationFindFirst.mockResolvedValue(row); mockOutboxFindUnique.mockResolvedValue({ state });
     await expect(new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: `event-${state}`, aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt })).resolves.toBeNull();
     expect(mockNotificationCreate).not.toHaveBeenCalled(); expect(mockNotificationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not let an older favorite aggregate overwrite a newer persisted count", async () => {
+    const newer = { ...row, metadata: { listingId: "listing-1", favoriteCount: 9, sourceTimestamp: "2026-08-24T15:55:00.000Z" } };
+    mockNotificationFindFirst.mockResolvedValue(newer);
+    mockOutboxFindUnique.mockResolvedValue({ state: "PROCESSING" });
+
+    const result = await new PrismaNotificationsRepository().persistAggregate({
+      userId: row.userId,
+      type: row.type,
+      category: row.category,
+      title: "older",
+      body: "older",
+      actionUrl: row.actionUrl,
+      entityType: row.entityType,
+      entityId: row.entityId,
+      metadata: { listingId: "listing-1", favoriteCount: 2, sourceTimestamp: "2026-08-24T15:40:00.000Z" },
+      dedupeKey: "favorite-cycle-old",
+      aggregationKey: "listing-1:hour",
+      readAt: null,
+      deletedAt: null,
+      expiresAt: row.expiresAt,
+      createdAt: new Date("2026-08-24T16:05:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ row: expect.objectContaining({ metadata: newer.metadata }), changed: false });
+    expect(mockNotificationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("applies the same favorite freshness guard in the JSON repository", async () => {
+    const newer = { ...row, metadata: { listingId: "listing-1", favoriteCount: 9, sourceTimestamp: "2026-08-24T15:55:00.000Z" } };
+    const state = { notifications: [newer], preferences: [] };
+    const store = {
+      readNotificationState: jest.fn(async () => state),
+      mutateNotificationState: jest.fn(async (work: (value: typeof state) => unknown) => work(state)),
+    } as unknown as JsonNotificationsStore;
+
+    const result = await new JsonNotificationsRepository(store).persistAggregate({
+      userId: row.userId,
+      type: row.type,
+      category: row.category,
+      title: "older",
+      body: "older",
+      actionUrl: row.actionUrl,
+      entityType: row.entityType,
+      entityId: row.entityId,
+      metadata: { listingId: "listing-1", favoriteCount: 2, sourceTimestamp: "2026-08-24T15:40:00.000Z" },
+      dedupeKey: "favorite-cycle-old",
+      aggregationKey: "listing-1:hour",
+      readAt: null,
+      deletedAt: null,
+      expiresAt: row.expiresAt,
+      createdAt: new Date("2026-08-24T16:05:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ row: expect.objectContaining({ metadata: newer.metadata }), changed: false });
+    expect(state.notifications[0].metadata).toEqual(newer.metadata);
+  });
+
+  it("lets a newer favorite aggregate replace an older JSON count", async () => {
+    const older = { ...row, metadata: { listingId: "listing-1", favoriteCount: 2, sourceTimestamp: "2026-08-24T15:40:00.000Z" } };
+    const state = { notifications: [older], preferences: [] };
+    const store = {
+      readNotificationState: jest.fn(async () => state),
+      mutateNotificationState: jest.fn(async (work: (value: typeof state) => unknown) => work(state)),
+    } as unknown as JsonNotificationsStore;
+
+    const result = await new JsonNotificationsRepository(store).persistAggregate({
+      userId: row.userId,
+      type: row.type,
+      category: row.category,
+      title: "newer",
+      body: "newer",
+      actionUrl: row.actionUrl,
+      entityType: row.entityType,
+      entityId: row.entityId,
+      metadata: { listingId: "listing-1", favoriteCount: 9, sourceTimestamp: "2026-08-24T15:55:00.000Z" },
+      dedupeKey: "favorite-cycle-new",
+      aggregationKey: "listing-1:hour",
+      readAt: null,
+      deletedAt: null,
+      expiresAt: row.expiresAt,
+      createdAt: new Date("2026-08-24T16:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ changed: true, row: expect.objectContaining({ title: "newer", metadata: expect.objectContaining({ favoriteCount: 9 }) }) });
   });
 });

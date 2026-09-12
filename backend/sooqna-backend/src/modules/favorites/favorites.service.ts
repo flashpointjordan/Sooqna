@@ -27,20 +27,21 @@ export class FavoritesService {
       actorId: userId,
       metadata: { action: "add" },
     });
-    if (favorite.created && listing.ownerId && listing.ownerId !== userId) {
+    if (favorite.created && favoritesCount > 0 && listing.ownerId && listing.ownerId !== userId) {
       try {
         await this.enqueue({
           aggregateType: "listing",
           aggregateId: listing.id,
           recipientId: listing.ownerId,
-          dedupeKey: `favorite:${listing.id}:${userId}`,
-          aggregationKey: `listing-favorite:${listing.id}:${new Date().toISOString().slice(0, 13)}`,
+          dedupeKey: `favorite:${listing.id}:${userId}:${favorite.sourceId}`,
+          aggregationKey: `listing-favorite:${listing.id}:${favorite.sourceTimestamp.slice(0, 13)}`,
           payload: {
             eventType: "LISTING_FAVORITED_AGGREGATE",
             recipientId: listing.ownerId,
             listingId: listing.id,
             listingTitle: listing.title,
             favoriteCount: favoritesCount,
+            sourceTimestamp: favorite.sourceTimestamp,
           },
         });
       } catch {

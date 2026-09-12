@@ -74,7 +74,13 @@ export function projectNotificationEventPayload(value: unknown): NotificationEve
     case "LISTING_REJECTED": return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), rejectionReason: requiredString(source, "rejectionReason") } as NotificationEventPayload;
     case "LISTING_EXPIRING": return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), expiresAt: requiredString(source, "expiresAt") } as NotificationEventPayload;
     case "LISTING_EXPIRED": return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle") } as NotificationEventPayload;
-    case "LISTING_FAVORITED_AGGREGATE": { if (typeof source.favoriteCount !== "number") throw new AppError(400, "Notification payload favoriteCount is invalid.", "VALIDATION_ERROR"); return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), favoriteCount: source.favoriteCount } as NotificationEventPayload; }
+    case "LISTING_FAVORITED_AGGREGATE": {
+      if (typeof source.favoriteCount !== "number") throw new AppError(400, "Notification payload favoriteCount is invalid.", "VALIDATION_ERROR");
+      const sourceTimestamp = requiredString(source, "sourceTimestamp");
+      const sourceDate = new Date(sourceTimestamp);
+      if (Number.isNaN(sourceDate.getTime()) || sourceDate.toISOString() !== sourceTimestamp) throw new AppError(400, "Notification payload sourceTimestamp is invalid.", "VALIDATION_ERROR");
+      return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), favoriteCount: source.favoriteCount, sourceTimestamp } as NotificationEventPayload;
+    }
     case "REVIEW_RECEIVED": { if (typeof source.rating !== "number") throw new AppError(400, "Notification payload rating is invalid.", "VALIDATION_ERROR"); return { ...base, eventType, reviewId: requiredString(source, "reviewId"), reviewerId: requiredString(source, "reviewerId"), reviewerName: requiredString(source, "reviewerName"), listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), rating: source.rating } as NotificationEventPayload; }
     case "SAVED_SEARCH_MATCHES": {
       if (!Array.isArray(source.matchingListingIds) || !source.matchingListingIds.every((item) => typeof item === "string") || typeof source.totalCount !== "number") throw new AppError(400, "Invalid saved-search notification payload.", "VALIDATION_ERROR");

@@ -6,6 +6,7 @@ import { decodeNotificationCursor, encodeNotificationCursor, type NotificationLi
 import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
 import type { NotificationOutboxRecord, NotificationOutboxRepository } from "./notifications.worker";
 import { JsonNotificationsRepository } from "./notifications.json.repository";
+import { isStaleAggregate } from "./notifications.aggregate";
 export { JsonNotificationsRepository, type JsonNotificationsStore } from "./notifications.json.repository";
 
 export function createNotificationsRepository(): NotificationsRepository & NotificationOutboxRepository {
@@ -117,6 +118,7 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
         if (ledger.state === NotificationOutboxState.PROCESSED) return existing ? { row: toStored(existing), changed: false } : null;
         if (ledger.state !== NotificationOutboxState.PENDING && ledger.state !== NotificationOutboxState.PROCESSING) return null;
       }
+      if (existing && isStaleAggregate(input.type, toStored(existing).metadata, input.metadata)) return { row: toStored(existing), changed: false };
       const result = existing
         ? toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: input.title, body: input.body, actionUrl: input.actionUrl, metadata: input.metadata as Prisma.InputJsonValue, expiresAt: input.expiresAt, readAt: null } }))
         : toStored(await tx.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } }));

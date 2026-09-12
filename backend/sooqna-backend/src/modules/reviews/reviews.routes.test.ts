@@ -45,6 +45,9 @@ const mockPrisma = {
     findMany: jest.fn(),
     deleteMany: jest.fn(),
   },
+  notificationOutbox: {
+    upsert: jest.fn(),
+  },
   category: {
     count: jest.fn(),
     findMany: jest.fn(),
@@ -171,6 +174,7 @@ describe("review route guards", () => {
     mockPrisma.listing.findFirst.mockResolvedValue({
       id: "listing-1",
       ownerId: "seller-1",
+      title: "Trusted listing",
       deletedAt: null,
     });
     mockPrisma.review.findFirst.mockResolvedValue(null);
@@ -192,6 +196,7 @@ describe("review route guards", () => {
     mockPrisma.user.update.mockResolvedValue(activeUser);
     mockPrisma.auditLog.count.mockResolvedValue(1);
     mockPrisma.auditLog.create.mockResolvedValue({});
+    mockPrisma.notificationOutbox.upsert.mockResolvedValue({});
     mockPrisma.$transaction.mockImplementation(async (queries: unknown[]) => Promise.all(queries));
   });
 
@@ -257,6 +262,24 @@ describe("review route guards", () => {
         }),
       })
     );
+    expect(mockPrisma.notificationOutbox.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { dedupeKey: "review:rev-1:seller-1" },
+      create: expect.objectContaining({
+        eventType: "REVIEW_RECEIVED",
+        recipientId: "seller-1",
+        payload: {
+          eventType: "REVIEW_RECEIVED",
+          recipientId: "seller-1",
+          reviewId: "rev-1",
+          reviewerId: "buyer-1",
+          reviewerName: "Buyer One",
+          listingId: "listing-1",
+          listingTitle: "Trusted listing",
+          rating: 5,
+        },
+      }),
+    }));
+    expect(JSON.stringify(mockPrisma.notificationOutbox.upsert.mock.calls)).not.toContain("Great seller");
   });
 
   it("rejects duplicate reviews", async () => {
