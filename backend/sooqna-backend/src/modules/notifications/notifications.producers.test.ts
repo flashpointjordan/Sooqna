@@ -169,6 +169,45 @@ describe("marketplace engagement notification producers", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a newly created favorite successful when notification enqueue fails and logs facts only", async () => {
+    const { FavoritesService } = await import("../favorites/favorites.service");
+    mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
+    const repo = {
+      listByUser: jest.fn(),
+      upsert: jest.fn().mockResolvedValue({ created: true }),
+      remove: jest.fn(),
+      countByListing: jest.fn().mockResolvedValue(1),
+    } as unknown as FavoritesRepository;
+    const enqueue = jest.fn().mockRejectedValue(new Error("password=must-not-be-logged"));
+    const log = jest.spyOn(logger, "error").mockImplementation(() => undefined);
+    const service = new (FavoritesService as unknown as new (repo: FavoritesRepository, enqueue: Enqueue) => InstanceType<typeof FavoritesService>)(repo, enqueue);
+
+    await expect(service.add("actor-1", "listing-1")).resolves.toEqual({ listingId: "listing-1", favoritesCount: 1, favorited: true });
+    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", {
+      eventType: "LISTING_FAVORITED_AGGREGATE",
+      listingId: "listing-1",
+      outcome: "failed",
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain("must-not-be-logged");
+  });
+
+  it("does not enqueue a favorite notification when the listing is missing", async () => {
+    const { FavoritesService } = await import("../favorites/favorites.service");
+    mockListingFindById.mockResolvedValue(null);
+    const repo = {
+      listByUser: jest.fn(),
+      upsert: jest.fn(),
+      remove: jest.fn(),
+      countByListing: jest.fn(),
+    } as unknown as FavoritesRepository;
+    const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
+    const service = new (FavoritesService as unknown as new (repo: FavoritesRepository, enqueue: Enqueue) => InstanceType<typeof FavoritesService>)(repo, enqueue);
+
+    await expect(service.add("actor-1", "listing-1")).rejects.toMatchObject({ statusCode: 404 });
+    expect(repo.upsert).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("notifies the seller after review persistence and stats recalculation without leaking review text", async () => {
     const { ReviewsService } = await import("../reviews/reviews.service");
     mockPrisma.listing.findFirst.mockResolvedValue({ id: "listing-1", ownerId: "seller-1", title: "Trusted listing" });
@@ -185,6 +224,7 @@ describe("marketplace engagement notification producers", () => {
     const review = await service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 5, comment: "password=not-for-notifications" });
 
     expect(mockPrisma.user.update).toHaveBeenCalled();
+    expect(mockPrisma.user.update.mock.invocationCallOrder[0]).toBeLessThan(enqueue.mock.invocationCallOrder[0]);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
       aggregateType: "review",
       aggregateId: review.id,
@@ -205,5 +245,20 @@ describe("marketplace engagement notification producers", () => {
 
     await expect(service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 4, comment: "Nice" })).resolves.toMatchObject({ sellerId: "seller-1" });
     expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), outcome: "failed" }));
+  });
+
+  it("keeps a created review successful when authoritative notification facts cannot be resolved", async () => {
+    const { ReviewsService } = await import("../reviews/reviews.service");
+    mockPrisma.listing.findFirst.mockResolvedValue({ id: "listing-1", ownerId: "seller-1", title: "Trusted listing" });
+    mockPrisma.user.findUnique.mockRejectedValue(new Error("token=must-not-be-logged"));
+    const repo = { create: jest.fn().mockImplementation(async (review) => review), findByReviewerAndListing: jest.fn().mockResolvedValue(null) } as unknown as ReviewsRepository;
+    const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
+    const log = jest.spyOn(logger, "error").mockImplementation(() => undefined);
+    const service = new (ReviewsService as unknown as new (repo: ReviewsRepository, enqueue: Enqueue) => InstanceType<typeof ReviewsService>)(repo, enqueue);
+
+    await expect(service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 4, comment: "Nice" })).resolves.toMatchObject({ sellerId: "seller-1" });
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), outcome: "failed" }));
+    expect(JSON.stringify(log.mock.calls)).not.toContain("must-not-be-logged");
   });
 });

@@ -3,18 +3,23 @@ import { AppError } from "../../shared/errors/appError";
 import { PrismaListingsRepository } from "../listings/repositories/listings.repository";
 import type { FavoritesRepository } from "./repositories/favorites.repository";
 import { trackEngagementEvent } from "../engagement/engagement.service";
+import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "../notifications/notifications.producer";
+import { logger } from "../../config/logger";
 
 export class FavoritesService {
   private readonly listingsRepo = new PrismaListingsRepository();
 
-  constructor(private readonly repo: FavoritesRepository) {}
+  constructor(
+    private readonly repo: FavoritesRepository,
+    private readonly enqueue: (input: EnqueueNotificationEventInput) => Promise<unknown> = enqueueNotificationEvent
+  ) {}
 
   async add(userId: string, listingId: string): Promise<{ listingId: string; favoritesCount: number; favorited: boolean }> {
     const listing = await this.listingsRepo.findById(listingId);
     if (!listing) {
       throw new AppError(404, "Listing not found", "NOT_FOUND");
     }
-    await this.repo.upsert({ userId, listingId, createdAt: nowIso() });
+    const favorite = await this.repo.upsert({ userId, listingId, createdAt: nowIso() });
     const favoritesCount = await this.syncFavoritesCounter(listingId);
     await trackEngagementEvent({
       eventType: "favorite",
@@ -22,6 +27,30 @@ export class FavoritesService {
       actorId: userId,
       metadata: { action: "add" },
     });
+    if (favorite.created && listing.ownerId && listing.ownerId !== userId) {
+      try {
+        await this.enqueue({
+          aggregateType: "listing",
+          aggregateId: listing.id,
+          recipientId: listing.ownerId,
+          dedupeKey: `favorite:${listing.id}:${userId}`,
+          aggregationKey: `listing-favorite:${listing.id}:${new Date().toISOString().slice(0, 13)}`,
+          payload: {
+            eventType: "LISTING_FAVORITED_AGGREGATE",
+            recipientId: listing.ownerId,
+            listingId: listing.id,
+            listingTitle: listing.title,
+            favoriteCount: favoritesCount,
+          },
+        });
+      } catch {
+        logger.error("Notification event enqueue failed", {
+          eventType: "LISTING_FAVORITED_AGGREGATE",
+          listingId: listing.id,
+          outcome: "failed",
+        });
+      }
+    }
     return { listingId, favoritesCount, favorited: true };
   }
 
