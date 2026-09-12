@@ -140,12 +140,12 @@ describe("marketplace engagement notification producers", () => {
   it("notifies a listing owner once only when a favorite is newly created, never for remove or self-favorites", async () => {
     const { FavoritesService } = await import("../favorites/favorites.service");
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
-    const upsert = jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z" });
+    const upsert = jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z", sourceVersion: "41", favoriteCount: 4 });
     const repo = {
       listByUser: jest.fn(),
       upsert,
-      remove: jest.fn(),
-      countByListing: jest.fn().mockResolvedValue(4),
+      remove: jest.fn().mockResolvedValue({ removed: true, favoriteCount: 3 }),
+      countByListing: jest.fn().mockResolvedValue(99),
     } as unknown as FavoritesRepository;
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
     const service = new (FavoritesService as unknown as new (repo: FavoritesRepository, enqueue: Enqueue) => InstanceType<typeof FavoritesService>)(repo, enqueue);
@@ -157,14 +157,15 @@ describe("marketplace engagement notification producers", () => {
       recipientId: "owner-1",
       dedupeKey: "favorite:listing-1:actor-1:favorite-cycle-1",
       aggregationKey: "listing-favorite:listing-1:2026-08-24T15",
-      payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "owner-1", listingId: "listing-1", listingTitle: "Trusted listing", favoriteCount: 4, sourceTimestamp: "2026-08-24T15:42:00.000Z" },
+      payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "owner-1", listingId: "listing-1", listingTitle: "Trusted listing", favoriteCount: 4, sourceTimestamp: "2026-08-24T15:42:00.000Z", sourceId: "favorite-cycle-1", sourceVersion: "41" },
     }));
+    expect(repo.countByListing).not.toHaveBeenCalled();
 
-    upsert.mockResolvedValue({ created: false });
+    upsert.mockResolvedValue({ created: false, favoriteCount: 4 });
     await service.add("actor-1", "listing-1");
     await service.remove("actor-1", "listing-1");
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "actor-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
-    upsert.mockResolvedValue({ created: true, sourceId: "favorite-cycle-self", sourceTimestamp: "2026-08-24T15:43:00.000Z" });
+    upsert.mockResolvedValue({ created: true, sourceId: "favorite-cycle-self", sourceTimestamp: "2026-08-24T15:43:00.000Z", sourceVersion: "42", favoriteCount: 4 });
     await service.add("actor-1", "listing-1");
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
@@ -174,8 +175,8 @@ describe("marketplace engagement notification producers", () => {
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
     const repo = {
       listByUser: jest.fn(),
-      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z" }),
-      remove: jest.fn(),
+      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z", sourceVersion: "41", favoriteCount: 1 }),
+      remove: jest.fn().mockResolvedValue({ removed: true, favoriteCount: 3 }),
       countByListing: jest.fn().mockResolvedValue(1),
     } as unknown as FavoritesRepository;
     const enqueue = jest.fn().mockRejectedValue(new Error("password=must-not-be-logged"));
@@ -213,8 +214,8 @@ describe("marketplace engagement notification producers", () => {
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: null, title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
     const repo = {
       listByUser: jest.fn(),
-      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z" }),
-      remove: jest.fn(),
+      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z", sourceVersion: "41", favoriteCount: 0 }),
+      remove: jest.fn().mockResolvedValue({ removed: true, favoriteCount: 0 }),
       countByListing: jest.fn().mockResolvedValue(1),
     } as unknown as FavoritesRepository;
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
@@ -228,13 +229,13 @@ describe("marketplace engagement notification producers", () => {
     const { FavoritesService } = await import("../favorites/favorites.service");
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
     const upsert = jest.fn()
-      .mockResolvedValueOnce({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:40:00.000Z" })
-      .mockResolvedValueOnce({ created: false })
-      .mockResolvedValueOnce({ created: true, sourceId: "favorite-cycle-2", sourceTimestamp: "2026-08-24T15:44:00.000Z" });
+      .mockResolvedValueOnce({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:40:00.000Z", sourceVersion: "41", favoriteCount: 1 })
+      .mockResolvedValueOnce({ created: false, favoriteCount: 1 })
+      .mockResolvedValueOnce({ created: true, sourceId: "favorite-cycle-2", sourceTimestamp: "2026-08-24T15:44:00.000Z", sourceVersion: "42", favoriteCount: 1 });
     const repo = {
       listByUser: jest.fn(),
       upsert,
-      remove: jest.fn(),
+      remove: jest.fn().mockResolvedValue({ removed: true, favoriteCount: 0 }),
       countByListing: jest.fn().mockResolvedValue(1),
     } as unknown as FavoritesRepository;
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
@@ -257,8 +258,8 @@ describe("marketplace engagement notification producers", () => {
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
     const repo = {
       listByUser: jest.fn(),
-      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z" }),
-      remove: jest.fn(),
+      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T15:42:00.000Z", sourceVersion: "41", favoriteCount: 0 }),
+      remove: jest.fn().mockResolvedValue({ removed: true, favoriteCount: 0 }),
       countByListing: jest.fn().mockResolvedValue(0),
     } as unknown as FavoritesRepository;
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
@@ -273,8 +274,8 @@ describe("marketplace engagement notification producers", () => {
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
     const repo = {
       listByUser: jest.fn(),
-      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T14:59:59.999Z" }),
-      remove: jest.fn(),
+      upsert: jest.fn().mockResolvedValue({ created: true, sourceId: "favorite-cycle-1", sourceTimestamp: "2026-08-24T14:59:59.999Z", sourceVersion: "41", favoriteCount: 1 }),
+      remove: jest.fn().mockResolvedValue({ removed: true, favoriteCount: 0 }),
       countByListing: jest.fn().mockResolvedValue(1),
     } as unknown as FavoritesRepository;
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});

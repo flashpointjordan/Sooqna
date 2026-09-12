@@ -247,10 +247,11 @@ model ListingImage {
 }
 
 model Favorite {
-  id        String   @id @default(cuid())
-  userId    String
-  listingId String?
-  createdAt DateTime
+  id                  String   @id @default(cuid())
+  userId              String
+  listingId           String?
+  createdAt           DateTime
+  notificationVersion BigInt   @default(autoincrement())
 
   user    User     @relation(fields: [userId], references: [firebaseUid], onDelete: Cascade)
   listing Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)

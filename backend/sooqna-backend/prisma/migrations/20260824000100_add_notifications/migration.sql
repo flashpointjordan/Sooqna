@@ -16,6 +16,10 @@ CREATE TYPE "NotificationBroadcastAudience" AS ENUM ('ALL', 'ROLES', 'USERS');
 -- AlterTable
 ALTER TABLE "Message" ADD COLUMN "clientRequestId" TEXT;
 
+-- Give each favorite cycle a durable ordering token. The listing transaction lock
+-- makes this version and its favorites-count snapshot describe the same mutation.
+ALTER TABLE "Favorite" ADD COLUMN "notificationVersion" BIGSERIAL NOT NULL;
+
 -- CreateTable
 CREATE TABLE "Notification" (
     "id" TEXT NOT NULL,

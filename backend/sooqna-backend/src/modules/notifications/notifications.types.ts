@@ -58,6 +58,8 @@ export type NotificationEventPayload =
       listingTitle: string;
       favoriteCount: number;
       sourceTimestamp: string;
+      sourceId: string;
+      sourceVersion: string;
     }
   | {
       eventType: "REVIEW_RECEIVED";

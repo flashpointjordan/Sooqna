@@ -1,18 +1,22 @@
 import * as path from "node:path";
+import { Prisma } from "@prisma/client";
 import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
-import { readJsonArrayFile, writeJsonArrayFile } from "../../../utils/fileStore";
+import { withFileLock } from "../../../shared/database/fileLock";
+import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../../utils/fileStore";
 import { generateId } from "../../../utils/ids";
 import type { FavoriteRecord } from "../favorites.types";
 
 export type FavoriteUpsertResult =
-  | { created: true; sourceId: string; sourceTimestamp: string }
-  | { created: false };
+  | { created: true; sourceId: string; sourceTimestamp: string; sourceVersion: string; favoriteCount: number }
+  | { created: false; favoriteCount: number };
+
+export type FavoriteRemoveResult = { removed: boolean; favoriteCount: number };
 
 export interface FavoritesRepository {
   listByUser(userId: string): Promise<FavoriteRecord[]>;
   upsert(record: FavoriteRecord): Promise<FavoriteUpsertResult>;
-  remove(userId: string, listingId: string): Promise<void>;
+  remove(userId: string, listingId: string): Promise<FavoriteRemoveResult>;
   countByListing(listingId: string): Promise<number>;
 }
 
@@ -20,6 +24,7 @@ const favoritesDataPath = path.resolve(
   process.cwd(),
   "src/modules/favorites/repositories/favorites.data.json"
 );
+const favoritesDataLockPath = `${favoritesDataPath}.lock`;
 
 function useJsonFallback(): boolean {
   return env.enableCategoriesJsonFallback;
@@ -41,7 +46,7 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
       if (useJsonFallback()) {
         const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
         return items
-          .filter((item) => item.userId === userId)
+          .filter((item) => item.userId === userId && !item.deletedAt)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       }
       throw new Error("Failed to fetch favorites.", { cause: error });
@@ -50,51 +55,77 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
 
   async upsert(record: FavoriteRecord): Promise<FavoriteUpsertResult> {
     try {
-      const created = await prisma.favorite.create({
-        data: {
-          userId: record.userId,
-          listingId: record.listingId,
-          createdAt: new Date(record.createdAt),
-        },
-        select: { id: true, createdAt: true },
-      });
-      return {
-        created: true,
-        sourceId: created.id,
-        sourceTimestamp: created.createdAt.toISOString(),
-      };
-    } catch (error) {
-      if (isUniqueConflict(error)) return { created: false };
-      if (useJsonFallback()) {
-        const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
-        const exists = items.some(
-          (item) => item.userId === record.userId && item.listingId === record.listingId
-        );
-        if (!exists) {
-          const sourceId = generateId("fav");
-          items.push({ ...record, id: sourceId });
-          writeJsonArrayFile(favoritesDataPath, items);
-          return { created: true, sourceId, sourceTimestamp: record.createdAt };
+      return await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${record.listingId}, 0))`);
+        const existing = await tx.favorite.findUnique({
+          where: { userId_listingId: { userId: record.userId, listingId: record.listingId } },
+          select: { id: true },
+        });
+        if (existing) {
+          const favoriteCount = await tx.favorite.count({ where: { listingId: record.listingId } });
+          return { created: false, favoriteCount };
         }
-        return { created: false };
+        const created = await tx.favorite.create({
+          data: { userId: record.userId, listingId: record.listingId, createdAt: new Date(record.createdAt) },
+          select: { id: true, createdAt: true, notificationVersion: true },
+        });
+        const favoriteCount = await tx.favorite.count({ where: { listingId: record.listingId } });
+        await tx.listing.updateMany({
+          where: { id: record.listingId, deletedAt: null },
+          data: { favoritesCount: favoriteCount },
+        });
+        return {
+          created: true,
+          sourceId: created.id,
+          sourceTimestamp: created.createdAt.toISOString(),
+          sourceVersion: created.notificationVersion.toString(),
+          favoriteCount,
+        };
+      });
+    } catch (error) {
+      if (useJsonFallback()) {
+        return withFileLock(favoritesDataLockPath, async () => {
+          const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
+          const active = items.filter((item) => !item.deletedAt);
+          const exists = active.some((item) => item.userId === record.userId && item.listingId === record.listingId);
+          if (exists) {
+            return { created: false, favoriteCount: active.filter((item) => item.listingId === record.listingId).length };
+          }
+          const sourceId = generateId("fav");
+          const sourceVersion = (items.reduce((highest, item) => {
+            if (item.listingId !== record.listingId || !item.notificationVersion) return highest;
+            const value = BigInt(item.notificationVersion);
+            return value > highest ? value : highest;
+          }, 0n) + 1n).toString();
+          items.push({ ...record, id: sourceId, notificationVersion: sourceVersion, deletedAt: null });
+          const favoriteCount = items.filter((item) => item.listingId === record.listingId && !item.deletedAt).length;
+          writeJsonArrayFileAtomically(favoritesDataPath, items);
+          return { created: true, sourceId, sourceTimestamp: record.createdAt, sourceVersion, favoriteCount };
+        });
       }
       throw new Error("Failed to save favorite.", { cause: error });
     }
   }
 
-  async remove(userId: string, listingId: string): Promise<void> {
+  async remove(userId: string, listingId: string): Promise<FavoriteRemoveResult> {
     try {
-      await prisma.favorite.deleteMany({
-        where: { userId, listingId },
+      return await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${listingId}, 0))`);
+        const deleted = await tx.favorite.deleteMany({ where: { userId, listingId } });
+        const favoriteCount = await tx.favorite.count({ where: { listingId } });
+        await tx.listing.updateMany({ where: { id: listingId, deletedAt: null }, data: { favoritesCount: favoriteCount } });
+        return { removed: deleted.count > 0, favoriteCount };
       });
     } catch (error) {
       if (useJsonFallback()) {
-        const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
-        const filtered = items.filter(
-          (item) => !(item.userId === userId && item.listingId === listingId)
-        );
-        writeJsonArrayFile(favoritesDataPath, filtered);
-        return;
+        return withFileLock(favoritesDataLockPath, async () => {
+          const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
+          const target = items.find((item) => item.userId === userId && item.listingId === listingId && !item.deletedAt);
+          if (target) target.deletedAt = new Date().toISOString();
+          const favoriteCount = items.filter((item) => item.listingId === listingId && !item.deletedAt).length;
+          if (target) writeJsonArrayFileAtomically(favoritesDataPath, items);
+          return { removed: Boolean(target), favoriteCount };
+        });
       }
       throw new Error("Failed to remove favorite.", { cause: error });
     }
@@ -108,15 +139,10 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
     } catch (error) {
       if (useJsonFallback()) {
         const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
-        return items.filter((item) => item.listingId === listingId).length;
+        return items.filter((item) => item.listingId === listingId && !item.deletedAt).length;
       }
       throw new Error("Failed to count favorites.", { cause: error });
     }
   }
-}
-
-function isUniqueConflict(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error &&
-    (error as { code?: unknown }).code === "P2002";
 }
 

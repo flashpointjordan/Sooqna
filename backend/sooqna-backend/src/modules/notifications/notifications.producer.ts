@@ -79,7 +79,9 @@ export function projectNotificationEventPayload(value: unknown): NotificationEve
       const sourceTimestamp = requiredString(source, "sourceTimestamp");
       const sourceDate = new Date(sourceTimestamp);
       if (Number.isNaN(sourceDate.getTime()) || sourceDate.toISOString() !== sourceTimestamp) throw new AppError(400, "Notification payload sourceTimestamp is invalid.", "VALIDATION_ERROR");
-      return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), favoriteCount: source.favoriteCount, sourceTimestamp } as NotificationEventPayload;
+      const sourceVersion = requiredString(source, "sourceVersion");
+      if (!/^[1-9]\d*$/.test(sourceVersion)) throw new AppError(400, "Notification payload sourceVersion is invalid.", "VALIDATION_ERROR");
+      return { ...base, eventType, listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), favoriteCount: source.favoriteCount, sourceTimestamp, sourceId: requiredString(source, "sourceId"), sourceVersion } as NotificationEventPayload;
     }
     case "REVIEW_RECEIVED": { if (typeof source.rating !== "number") throw new AppError(400, "Notification payload rating is invalid.", "VALIDATION_ERROR"); return { ...base, eventType, reviewId: requiredString(source, "reviewId"), reviewerId: requiredString(source, "reviewerId"), reviewerName: requiredString(source, "reviewerName"), listingId: requiredString(source, "listingId"), listingTitle: requiredString(source, "listingTitle"), rating: source.rating } as NotificationEventPayload; }
     case "SAVED_SEARCH_MATCHES": {

@@ -3,5 +3,7 @@ export interface FavoriteRecord {
   userId: string;
   listingId: string;
   createdAt: string;
+  notificationVersion?: string;
+  deletedAt?: string | null;
 }
 

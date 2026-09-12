@@ -165,4 +165,45 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
 
     expect(result).toMatchObject({ changed: true, row: expect.objectContaining({ title: "newer", metadata: expect.objectContaining({ favoriteCount: 9 }) }) });
   });
+
+  it("orders equal-timestamp Prisma favorite events by their atomic source version", async () => {
+    const current = { ...row, metadata: { listingId: "listing-1", favoriteCount: 9, sourceTimestamp: "2026-08-24T15:55:00.000Z", sourceId: "favorite-cycle-old", sourceVersion: "41" } };
+    mockNotificationFindFirst.mockResolvedValue(current);
+    mockOutboxFindUnique.mockResolvedValue({ state: "PROCESSING" });
+    mockNotificationUpdate.mockResolvedValue({ ...current, title: "newer create", metadata: { ...current.metadata, favoriteCount: 2, sourceId: "favorite-cycle-new", sourceVersion: "42" } });
+
+    const result = await new PrismaNotificationsRepository().persistAggregate({
+      userId: row.userId, type: row.type, category: row.category,
+      title: "newer create", body: "newer create",
+      actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId,
+      metadata: { listingId: "listing-1", favoriteCount: 2, sourceTimestamp: "2026-08-24T15:55:00.000Z", sourceId: "favorite-cycle-new", sourceVersion: "42" },
+      dedupeKey: "favorite-cycle-new", aggregationKey: "listing-1:hour",
+      readAt: null, deletedAt: null, expiresAt: row.expiresAt,
+      createdAt: new Date("2026-08-24T16:05:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ changed: true, row: expect.objectContaining({ metadata: expect.objectContaining({ favoriteCount: 2, sourceId: "favorite-cycle-new", sourceVersion: "42" }) }) });
+    expect(mockNotificationUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("orders equal-timestamp JSON favorite events by their atomic source version", async () => {
+    const current = { ...row, metadata: { listingId: "listing-1", favoriteCount: 2, sourceTimestamp: "2026-08-24T15:55:00.000Z", sourceId: "favorite-cycle-old", sourceVersion: "41" } };
+    const state = { notifications: [current], preferences: [] };
+    const store = {
+      readNotificationState: jest.fn(async () => state),
+      mutateNotificationState: jest.fn(async (work: (value: typeof state) => unknown) => work(state)),
+    } as unknown as JsonNotificationsStore;
+
+    const result = await new JsonNotificationsRepository(store).persistAggregate({
+      userId: row.userId, type: row.type, category: row.category,
+      title: "newer create", body: "newer create",
+      actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId,
+      metadata: { listingId: "listing-1", favoriteCount: 3, sourceTimestamp: "2026-08-24T15:55:00.000Z", sourceId: "favorite-cycle-new", sourceVersion: "42" },
+      dedupeKey: "favorite-cycle-new", aggregationKey: "listing-1:hour",
+      readAt: null, deletedAt: null, expiresAt: row.expiresAt,
+      createdAt: new Date("2026-08-24T16:05:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ changed: true, row: expect.objectContaining({ metadata: expect.objectContaining({ favoriteCount: 3, sourceId: "favorite-cycle-new", sourceVersion: "42" }) }) });
+  });
 });

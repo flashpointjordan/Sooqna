@@ -20,7 +20,7 @@ export class FavoritesService {
       throw new AppError(404, "Listing not found", "NOT_FOUND");
     }
     const favorite = await this.repo.upsert({ userId, listingId, createdAt: nowIso() });
-    const favoritesCount = await this.syncFavoritesCounter(listingId);
+    const favoritesCount = favorite.favoriteCount;
     await trackEngagementEvent({
       eventType: "favorite",
       listingId,
@@ -42,6 +42,8 @@ export class FavoritesService {
             listingTitle: listing.title,
             favoriteCount: favoritesCount,
             sourceTimestamp: favorite.sourceTimestamp,
+            sourceId: favorite.sourceId,
+            sourceVersion: favorite.sourceVersion,
           },
         });
       } catch {
@@ -60,8 +62,7 @@ export class FavoritesService {
     if (!listing) {
       throw new AppError(404, "Listing not found", "NOT_FOUND");
     }
-    await this.repo.remove(userId, listingId);
-    const favoritesCount = await this.syncFavoritesCounter(listingId);
+    const { favoriteCount: favoritesCount } = await this.repo.remove(userId, listingId);
     await trackEngagementEvent({
       eventType: "favorite",
       listingId,
@@ -74,20 +75,6 @@ export class FavoritesService {
   async list(userId: string): Promise<string[]> {
     const records = await this.repo.listByUser(userId);
     return records.map((record) => record.listingId);
-  }
-
-  private async syncFavoritesCounter(listingId: string): Promise<number> {
-    const listing = await this.listingsRepo.findById(listingId);
-    if (!listing) return 0;
-    const count = await this.repo.countByListing(listingId);
-    if (listing.favoritesCount !== count) {
-      await this.listingsRepo.update(listingId, {
-        ...listing,
-        favoritesCount: count,
-        updatedAt: nowIso(),
-      });
-    }
-    return count;
   }
 }
 

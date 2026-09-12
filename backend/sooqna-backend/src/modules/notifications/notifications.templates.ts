@@ -184,7 +184,7 @@ function render(type: NotificationType, payload: NotificationEventPayload): Rend
         actionUrl: listingUrl(payload.listingId),
         entityType: "listing",
         entityId: cleanId(payload.listingId),
-        metadata: { listingId: cleanId(payload.listingId), favoriteCount: count, sourceTimestamp: payload.sourceTimestamp },
+        metadata: { listingId: cleanId(payload.listingId), favoriteCount: count, sourceTimestamp: payload.sourceTimestamp, sourceId: cleanId(payload.sourceId), sourceVersion: payload.sourceVersion },
       };
     }
     case NotificationType.REVIEW_RECEIVED: {

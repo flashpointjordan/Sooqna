@@ -62,6 +62,8 @@ const payloads = {
     listingTitle: "كاميرا رقمية",
     favoriteCount: 3,
     sourceTimestamp: "2026-08-24T10:00:00.000Z",
+    sourceId: "favorite-cycle-1",
+    sourceVersion: "1",
   },
   REVIEW_RECEIVED: {
     eventType: NotificationType.REVIEW_RECEIVED,
