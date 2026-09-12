@@ -187,6 +187,7 @@ describe("marketplace engagement notification producers", () => {
     expect(log).toHaveBeenCalledWith("Notification event enqueue failed", {
       eventType: "LISTING_FAVORITED_AGGREGATE",
       listingId: "listing-1",
+      recipientId: "owner-1",
       outcome: "failed",
     });
     expect(JSON.stringify(log.mock.calls)).not.toContain("must-not-be-logged");
@@ -324,7 +325,7 @@ describe("marketplace engagement notification producers", () => {
     const service = new (ReviewsService as unknown as new (repo: ReviewsRepository, enqueue: Enqueue) => InstanceType<typeof ReviewsService>)(repo, enqueue);
 
     await expect(service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 4, comment: "Nice" })).resolves.toMatchObject({ sellerId: "seller-1" });
-    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), outcome: "failed" }));
+    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), recipientId: "seller-1", outcome: "failed" }));
   });
 
   it("keeps a created review successful when authoritative notification facts cannot be resolved", async () => {
@@ -338,7 +339,7 @@ describe("marketplace engagement notification producers", () => {
 
     await expect(service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 4, comment: "Nice" })).resolves.toMatchObject({ sellerId: "seller-1" });
     expect(enqueue).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), outcome: "failed" }));
+    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), recipientId: "seller-1", outcome: "failed" }));
     expect(JSON.stringify(log.mock.calls)).not.toContain("must-not-be-logged");
   });
 });

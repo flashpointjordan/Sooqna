@@ -88,6 +88,7 @@ export class ReviewsService {
         logger.error("Notification event enqueue failed", {
           eventType: "REVIEW_RECEIVED",
           reviewId: review.id,
+          recipientId: input.sellerId,
           outcome: "failed",
         });
       }
@@ -95,6 +96,7 @@ export class ReviewsService {
       logger.error("Notification event enqueue failed", {
         eventType: "REVIEW_RECEIVED",
         reviewId: review.id,
+        recipientId: input.sellerId,
         outcome: "failed",
       });
     }

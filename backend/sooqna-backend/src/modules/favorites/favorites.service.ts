@@ -50,6 +50,7 @@ export class FavoritesService {
         logger.error("Notification event enqueue failed", {
           eventType: "LISTING_FAVORITED_AGGREGATE",
           listingId: listing.id,
+          recipientId: listing.ownerId,
           outcome: "failed",
         });
       }
