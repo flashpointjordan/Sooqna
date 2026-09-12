@@ -12,6 +12,12 @@ import { checkRole } from "../../middleware/checkRole";
 import { AppError } from "../../shared/errors/appError";
 import { generateId } from "../../utils/ids";
 import { logAuditEvent } from "../audit/audit.service";
+import {
+  enqueueModerationNotification,
+  parseRejectionReason,
+  type ModerationAction,
+} from "../notifications/listingNotificationProducers";
+import { enqueueSavedSearchMatchesForListing } from "../notifications/savedSearchMatcher";
 
 type PageParams = {
   limit: number;
@@ -809,17 +815,9 @@ adminRouter.get("/listings", async (req, res) => {
   });
 });
 
-async function moderateListing(req: Request, res: Response, action: "publish" | "reject" | "archive" | "sold" | "feature" | "unfeature") {
+async function moderateListing(req: Request, res: Response, action: ModerationAction) {
   const now = new Date();
-  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : undefined;
-  if (action === "reject" && !reason) {
-    throw new AppError(400, "Rejection reason is required.", "VALIDATION_ERROR");
-  }
-  const previous = await prisma.listing.findUnique({
-    where: { id: req.params.id },
-    select: { status: true },
-  });
-  if (!previous) throw new AppError(404, "Listing not found.", "NOT_FOUND");
+  const reason = action === "reject" ? parseRejectionReason(req.body?.reason) : undefined;
   const dataByAction: Record<typeof action, Prisma.ListingUpdateInput> = {
     publish: { status: "published", isApproved: true, publishedAt: now, archivedAt: null, updatedAt: now },
     reject: { status: "rejected", isApproved: false, isFeatured: false, updatedAt: now },
@@ -828,33 +826,41 @@ async function moderateListing(req: Request, res: Response, action: "publish" | 
     feature: { isFeatured: true, updatedAt: now },
     unfeature: { isFeatured: false, updatedAt: now },
   };
-  const listing = await prisma.listing.update({
-    where: { id: req.params.id },
-    data: dataByAction[action],
-    select: {
-      id: true,
-      title: true,
-      ownerId: true,
-      status: true,
-      isFeatured: true,
-      isApproved: true,
-      publishedAt: true,
-      archivedAt: true,
-      soldAt: true,
-      updatedAt: true,
-    },
-  });
-  await prisma.listingModerationLog.create({
-    data: {
-      id: generateId("mlog"),
-      listingId: listing.id,
-      adminUserId: actorId(req),
-      action,
-      reason: reason ?? null,
-      previousStatus: previous.status,
-      newStatus: listing.status,
-      createdAt: now,
-    },
+  const listing = await prisma.$transaction(async (tx) => {
+    const previous = await tx.listing.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, status: true, ownerId: true, title: true, description: true,
+        categoryId: true, locationCity: true, condition: true, price: true,
+      },
+    });
+    if (!previous) throw new AppError(404, "Listing not found.", "NOT_FOUND");
+    const updated = await tx.listing.update({
+      where: { id: req.params.id },
+      data: dataByAction[action],
+      select: {
+        id: true, title: true, description: true, ownerId: true, categoryId: true,
+        locationCity: true, condition: true, price: true, status: true, isFeatured: true,
+        isApproved: true, publishedAt: true, archivedAt: true, soldAt: true, updatedAt: true,
+      },
+    });
+    await tx.listingModerationLog.create({
+      data: {
+        id: generateId("mlog"), listingId: updated.id, adminUserId: actorId(req), action,
+        reason: reason ?? null, previousStatus: previous.status, newStatus: updated.status, createdAt: now,
+      },
+    });
+    const eventAt = action === "publish" ? updated.publishedAt : updated.updatedAt;
+    if (eventAt) await enqueueModerationNotification(action, updated, eventAt, reason, tx);
+    if (action === "publish" && updated.publishedAt) {
+      await enqueueSavedSearchMatchesForListing({
+        id: updated.id, title: updated.title, description: updated.description,
+        categoryId: updated.categoryId, locationCity: updated.locationCity,
+        condition: updated.condition, price: updated.price, ownerId: updated.ownerId,
+        publishedAt: updated.publishedAt,
+      }, tx);
+    }
+    return updated;
   });
   await logAuditEvent({
     actorId: actorId(req),
@@ -887,17 +893,11 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
     ? req.body.ids.filter((id: unknown): id is string => typeof id === "string" && id.trim().length > 0).slice(0, 100)
     : [];
   const action = oneOf(req.body?.action, ["publish", "reject", "archive"] as const);
-  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : undefined;
   if (!ids.length || !action) throw new AppError(400, "ids and action are required.", "VALIDATION_ERROR");
-  if (action === "reject" && !reason) throw new AppError(400, "Rejection reason is required.", "VALIDATION_ERROR");
+  const reason = action === "reject" ? parseRejectionReason(req.body?.reason) : undefined;
 
   const now = new Date();
   const adminUserId = actorId(req);
-  const previousListings = await prisma.listing.findMany({
-    where: { id: { in: ids }, deletedAt: null },
-    select: { id: true, status: true },
-  });
-  if (!previousListings.length) throw new AppError(404, "No listings found.", "NOT_FOUND");
   const newStatus = action === "publish" ? "published" : action === "reject" ? "rejected" : "archived";
   const updateData: Prisma.ListingUpdateManyMutationInput = {
     status: newStatus,
@@ -913,12 +913,20 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
   if (action === "archive") {
     updateData.archivedAt = now;
   }
-  await prisma.$transaction([
-    prisma.listing.updateMany({
+  const updatedCount = await prisma.$transaction(async (tx) => {
+    const previousListings = await tx.listing.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+      select: {
+        id: true, status: true, ownerId: true, title: true, description: true,
+        categoryId: true, locationCity: true, condition: true, price: true,
+      },
+    });
+    if (!previousListings.length) throw new AppError(404, "No listings found.", "NOT_FOUND");
+    await tx.listing.updateMany({
       where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null },
       data: updateData,
-    }),
-    prisma.listingModerationLog.createMany({
+    });
+    await tx.listingModerationLog.createMany({
       data: previousListings.map((listing) => ({
         id: generateId("mlog"),
         listingId: listing.id,
@@ -929,16 +937,28 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
         newStatus,
         createdAt: now,
       })),
-    }),
-  ]);
+    });
+    for (const listing of previousListings) {
+      await enqueueModerationNotification(action, listing, now, reason, tx);
+      if (action === "publish") {
+        await enqueueSavedSearchMatchesForListing({
+          id: listing.id, title: listing.title, description: listing.description,
+          categoryId: listing.categoryId, locationCity: listing.locationCity,
+          condition: listing.condition, price: listing.price, ownerId: listing.ownerId,
+          publishedAt: now,
+        }, tx);
+      }
+    }
+    return previousListings.length;
+  });
   await logAuditEvent({
     actorId: adminUserId,
     action: "admin.listing.bulk",
     targetType: "listing",
     targetId: null,
-    metadata: cleanMetadata({ action, count: previousListings.length, reason: reason ?? null }),
+    metadata: cleanMetadata({ action, count: updatedCount, reason: reason ?? null }),
   });
-  res.json({ success: true, data: { updatedCount: previousListings.length } });
+  res.json({ success: true, data: { updatedCount } });
 });
 
 adminRouter.get("/moderation/listings/:id/history", async (req, res) => {

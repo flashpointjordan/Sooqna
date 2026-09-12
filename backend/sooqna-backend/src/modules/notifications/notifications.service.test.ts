@@ -1,6 +1,7 @@
 import { NotificationCategory, NotificationType } from "@prisma/client";
 import { decodeNotificationCursor, encodeNotificationCursor } from "./notifications.types";
 import { NotificationsService, type NotificationsRepository, type StoredNotification } from "./notifications.service";
+import { mergeSavedSearchAggregate } from "./notifications.aggregate";
 
 const now = new Date("2026-08-24T12:00:00.000Z");
 const active = (id: string, overrides: Partial<StoredNotification> = {}): StoredNotification => ({
@@ -32,7 +33,7 @@ class MemoryRepo implements NotificationsRepository {
   async findByDedupeKey(key: string) { return this.rows.find((row) => row.dedupeKey === key) ?? null; }
   async findCurrentAggregate(key: string) { return this.rows.find((row) => row.aggregationKey === key && !row.deletedAt) ?? null; }
   async create(input: Omit<StoredNotification, "id" | "updatedAt">) { const row = active(`n-${this.rows.length + 1}`, { ...input, updatedAt: input.createdAt }); this.rows.push(row); return row; }
-  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && !this.outboxEvents.has(input.dedupeKey)) throw Object.assign(new Error("outbox missing"), { code: "NOTIFICATION_EVENT_NOT_FOUND" }); if (input.dedupeKey && this.outboxEvents.get(input.dedupeKey) === "PROCESSED") return { row: row!, changed: false }; if (row) { Object.assign(row, { ...input, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create(input), changed: true }; }
+  async persistAggregate(input: Omit<StoredNotification, "id" | "updatedAt"> & { aggregationKey: string }) { const row = this.rows.find((item) => item.userId === input.userId && item.aggregationKey === input.aggregationKey && !item.deletedAt); if (input.dedupeKey && !this.outboxEvents.has(input.dedupeKey)) throw Object.assign(new Error("outbox missing"), { code: "NOTIFICATION_EVENT_NOT_FOUND" }); if (input.dedupeKey && this.outboxEvents.get(input.dedupeKey) === "PROCESSED") return { row: row!, changed: false }; if (row) { const next = input.type === NotificationType.SAVED_SEARCH_MATCHES ? { ...input, metadata: mergeSavedSearchAggregate(row.metadata, input.metadata) } : input; if (next.type === NotificationType.SAVED_SEARCH_MATCHES) next.body = `وجدنا ${next.metadata.totalCount} نتيجة جديدة`; Object.assign(row, { ...next, dedupeKey: row.dedupeKey, readAt: null }); return { row, changed: true }; } return { row: await this.create(input), changed: true }; }
   async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>) { const row = this.rows.find((item) => item.id === id)!; Object.assign(row, input, { readAt: null }); return row; }
 }
 
@@ -155,5 +156,27 @@ describe("NotificationsService", () => {
 
     expect(repo.rows[0].metadata).toMatchObject({ sourceTimestamp: "2026-08-24T11:55:00.000Z", sourceId: "favorite-cycle-1", sourceVersion: "41" });
     expect(result?.metadata).toEqual({ listingId: "listing-1", favoriteCount: 3 });
+  });
+
+  it("merges saved-search matches hourly, caps listed ids at ten, and retains the exact total", async () => {
+    const repo = new MemoryRepo();
+    const service = new NotificationsService(repo, { now: () => now });
+    const key = "saved-search:user-a:search-1:2026-08-24T12";
+    for (let index = 1; index <= 12; index += 1) {
+      repo.outboxEvents.set(`match-${index}`, "PENDING");
+      await service.createFromEvent(NotificationType.SAVED_SEARCH_MATCHES, {
+        eventType: NotificationType.SAVED_SEARCH_MATCHES,
+        recipientId: "user-a",
+        savedSearchId: "search-1",
+        savedSearchName: "Laptops",
+        query: { city: "Amman" },
+        matchingListingIds: [`listing-${index}`],
+        totalCount: 1,
+      }, { aggregationKey: key, dedupeKey: `match-${index}` });
+    }
+    expect(repo.rows).toHaveLength(1);
+    expect(repo.rows[0].metadata.totalCount).toBe(12);
+    expect(repo.rows[0].metadata.matchingListingIds).toEqual(Array.from({ length: 10 }, (_, index) => `listing-${index + 1}`));
+    expect(repo.rows[0].body).toContain("12");
   });
 });

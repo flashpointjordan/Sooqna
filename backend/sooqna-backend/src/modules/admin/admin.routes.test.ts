@@ -23,6 +23,12 @@ const mockPrisma = {
     createMany: jest.fn(),
     findMany: jest.fn(),
   },
+  notificationOutbox: {
+    upsert: jest.fn(),
+  },
+  savedSearch: {
+    findMany: jest.fn(),
+  },
   message: {
     groupBy: jest.fn(),
   },
@@ -107,7 +113,13 @@ describe("admin routes", () => {
       picture: "",
     }));
     mockPrisma.auditLog.count.mockResolvedValue(1);
-    mockPrisma.$transaction.mockImplementation(async (queries: unknown[]) => Promise.all(queries));
+    mockPrisma.$transaction.mockImplementation(async (input: unknown) =>
+      typeof input === "function"
+        ? (input as (tx: typeof mockPrisma) => Promise<unknown>)(mockPrisma)
+        : Promise.all(input as Promise<unknown>[])
+    );
+    mockPrisma.notificationOutbox.upsert.mockResolvedValue({});
+    mockPrisma.savedSearch.findMany.mockResolvedValue([]);
   });
 
   it("blocks unauthenticated users from admin stats", async () => {
@@ -261,7 +273,10 @@ describe("admin routes", () => {
 
   it("audits admin listing rejection through explicit moderation endpoint", async () => {
     mockUser(Role.ADMIN);
-    mockPrisma.listing.findUnique.mockResolvedValue({ status: "pending" });
+    mockPrisma.listing.findUnique.mockResolvedValue({
+      id: "lst-1", status: "pending", ownerId: "seller-1", title: "Flagged item",
+      description: "Description", categoryId: "other", locationCity: "Amman", condition: "used", price: 10,
+    });
     mockPrisma.listingModerationLog.create.mockResolvedValue({});
     mockPrisma.listing.update.mockResolvedValue({
       id: "lst-1",
@@ -302,17 +317,34 @@ describe("admin routes", () => {
         }),
       })
     );
+    expect(mockPrisma.notificationOutbox.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { dedupeKey: "listing-rejected:lst-1:2026-01-02T00:00:00.000Z" },
+      create: expect.objectContaining({
+        eventType: "LISTING_REJECTED",
+        recipientId: "seller-1",
+        payload: expect.objectContaining({ rejectionReason: "Policy violation", listingTitle: "Flagged item" }),
+      }),
+      update: {},
+    }));
   });
 
   it("allows admins to publish a pending listing through moderation", async () => {
     mockUser(Role.ADMIN);
     const publishedAt = new Date("2026-01-02T00:00:00.000Z");
-    mockPrisma.listing.findUnique.mockResolvedValue({ status: "pending" });
+    mockPrisma.listing.findUnique.mockResolvedValue({
+      id: "lst-1", status: "pending", ownerId: "seller-1", title: "Ready item",
+      description: "Description", categoryId: "other", locationCity: "Amman", condition: "used", price: 10,
+    });
     mockPrisma.listingModerationLog.create.mockResolvedValue({});
     mockPrisma.listing.update.mockResolvedValue({
       id: "lst-1",
       title: "Ready item",
+      description: "Description",
       ownerId: "seller-1",
+      categoryId: "other",
+      locationCity: "Amman",
+      condition: "used",
+      price: 10,
       status: "published",
       isFeatured: false,
       isApproved: true,
@@ -351,6 +383,12 @@ describe("admin routes", () => {
         }),
       })
     );
+    expect(mockPrisma.notificationOutbox.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { dedupeKey: "listing-approved:lst-1:2026-01-02T00:00:00.000Z" },
+      create: expect.objectContaining({ eventType: "LISTING_APPROVED", recipientId: "seller-1" }),
+      update: {},
+    }));
+    expect(mockPrisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
   });
 
   it("allows admins to manage cities", async () => {

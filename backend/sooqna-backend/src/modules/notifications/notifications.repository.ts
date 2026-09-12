@@ -6,7 +6,7 @@ import { decodeNotificationCursor, encodeNotificationCursor, type NotificationLi
 import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
 import type { NotificationOutboxRecord, NotificationOutboxRepository } from "./notifications.worker";
 import { JsonNotificationsRepository } from "./notifications.json.repository";
-import { isStaleAggregate } from "./notifications.aggregate";
+import { isStaleAggregate, mergeSavedSearchAggregate } from "./notifications.aggregate";
 export { JsonNotificationsRepository, type JsonNotificationsStore } from "./notifications.json.repository";
 
 export function createNotificationsRepository(): NotificationsRepository & NotificationOutboxRepository {
@@ -119,13 +119,23 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
         if (ledger.state !== NotificationOutboxState.PENDING && ledger.state !== NotificationOutboxState.PROCESSING) return null;
       }
       if (existing && isStaleAggregate(input.type, toStored(existing).metadata, input.metadata)) return { row: toStored(existing), changed: false };
+      const aggregateInput = existing && input.type === "SAVED_SEARCH_MATCHES"
+        ? withSavedSearchAggregate(input, toStored(existing).metadata)
+        : input;
       const result = existing
-        ? toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: input.title, body: input.body, actionUrl: input.actionUrl, metadata: input.metadata as Prisma.InputJsonValue, expiresAt: input.expiresAt, readAt: null } }))
+        ? toStored(await tx.notification.update({ where: { id: existing.id }, data: { title: aggregateInput.title, body: aggregateInput.body, actionUrl: aggregateInput.actionUrl, metadata: aggregateInput.metadata as Prisma.InputJsonValue, expiresAt: aggregateInput.expiresAt, readAt: null } }))
         : toStored(await tx.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } }));
       return { row: result, changed: true };
     });
   }
   async updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>): Promise<StoredNotification> { return toStored(await prisma.notification.update({ where: { id }, data: { ...input, ...(input.metadata ? { metadata: input.metadata as Prisma.InputJsonValue } : {}), readAt: null } })); }
+}
+
+function withSavedSearchAggregate(input: NewNotification, current: Record<string, string | number | string[]>): NewNotification {
+  const metadata = mergeSavedSearchAggregate(current, input.metadata);
+  const total = typeof metadata.totalCount === "number" ? metadata.totalCount : 0;
+  const name = typeof metadata.savedSearchName === "string" ? metadata.savedSearchName : "";
+  return { ...input, metadata, body: `وجدنا ${total} نتيجة جديدة لبحث «${name}».` };
 }
 
 

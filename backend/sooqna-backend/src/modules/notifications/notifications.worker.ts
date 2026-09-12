@@ -33,6 +33,7 @@ type WorkerDeps = {
   logger?: { error(message: string, meta?: Record<string, unknown>): void; warn?(message: string, meta?: Record<string, unknown>): void };
   publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void;
   processEvent?: (row: NotificationOutboxRecord) => Promise<void>;
+  runLifecycle?: (now: Date) => Promise<void>;
 };
 
 const STALE_PROCESSING_MS = 5 * 60_000;
@@ -45,6 +46,7 @@ export function createNotificationWorker(deps: WorkerDeps) {
   let timer: NodeJS.Timeout | undefined;
   let stopping = false;
   let active: Promise<void> | undefined;
+  let lifecycleHour: string | undefined;
 
   async function process(row: NotificationOutboxRecord): Promise<void> {
     if (deps.processEvent) return deps.processEvent(row);
@@ -67,6 +69,12 @@ export function createNotificationWorker(deps: WorkerDeps) {
 
   async function execute(): Promise<void> {
     const recoveredAt = now();
+    const currentHour = recoveredAt.toISOString().slice(0, 13);
+    if (deps.runLifecycle && lifecycleHour !== currentHour) {
+      lifecycleHour = currentHour;
+      try { await deps.runLifecycle(recoveredAt); }
+      catch (error) { deps.logger?.error("Listing notification lifecycle failed.", { error: errorMessage(error) }); }
+    }
     const recovery = await deps.repository.recoverStaleProcessing(recoveredAt, new Date(recoveredAt.getTime() - STALE_PROCESSING_MS));
     for (const dead of recovery.dead) deps.logger?.error("Notification outbox event is dead.", { outboxId: dead.id, attempts: dead.attempts, reason: "stale_processing" });
     if (stopping) return;

@@ -36,6 +36,36 @@ function service() {
 }
 
 describe("notification outbox worker", () => {
+  test("runs listing lifecycle maintenance at most once per UTC hour", async () => {
+    const clock = { value: new Date("2026-09-12T08:01:00.000Z") };
+    const lifecycle = jest.fn<Promise<void>, [Date]>(async () => undefined);
+    const worker = createNotificationWorker({ repository: new FakeOutboxRepository([]), service: service(), now: () => clock.value, runLifecycle: lifecycle });
+    await worker.runOnce();
+    clock.value = new Date("2026-09-12T08:59:00.000Z");
+    await worker.runOnce();
+    clock.value = new Date("2026-09-12T09:00:00.000Z");
+    await worker.runOnce();
+    expect(lifecycle.mock.calls.map(([at]) => at.toISOString())).toEqual([
+      "2026-09-12T08:01:00.000Z",
+      "2026-09-12T09:00:00.000Z",
+    ]);
+  });
+
+  test("keeps outbox delivery running when hourly listing lifecycle maintenance fails", async () => {
+    const repo = new FakeOutboxRepository([event()]);
+    const logger = { error: jest.fn() };
+    const worker = createNotificationWorker({
+      repository: repo,
+      service: service(),
+      now: () => now,
+      logger,
+      runLifecycle: async () => { throw new Error("lifecycle unavailable"); },
+    });
+    await worker.runOnce();
+    expect(repo.marks).toEqual([{ id: "outbox-1", state: "PROCESSED" }]);
+    expect(logger.error).toHaveBeenCalledWith("Listing notification lifecycle failed.", { error: "lifecycle unavailable" });
+  });
+
   test("producer upserts one fact-only event by deterministic dedupe key", async () => {
     const upsert = jest.fn(async (query: { create: { dedupeKey: string } }) => ({ id: "outbox-1", ...query.create }));
     const payload = { eventType: "LISTING_APPROVED" as const, recipientId: "user-1", listingId: "listing-1", listingTitle: "Laptop" };
