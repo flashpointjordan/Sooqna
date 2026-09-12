@@ -3,8 +3,13 @@ import {
   moderationNotification,
   parseRejectionReason,
   runListingLifecycle,
+  runJsonListingLifecycle,
   runJsonListingLifecycleState,
+  type JsonLifecycleJournal,
+  type JsonLifecycleListing,
+  type JsonLifecycleStorage,
 } from "./listingNotificationProducers";
+import type { JsonMessagesState } from "../messages/repositories/messages.repository";
 import {
   enqueueSavedSearchMatchesForListing,
   matchesSavedSearch,
@@ -111,6 +116,47 @@ describe("listing notification producers", () => {
     ]);
     expect(runJsonListingLifecycleState(state, new Date("2026-09-12T09:00:00.000Z"))).toEqual({ expiring: 0, expired: 0 });
     expect(state.notificationOutbox).toHaveLength(2);
+  });
+
+  test("recovers an event-first JSON expiration after a crash without overwriting a concurrent listing update", async () => {
+    let listings: JsonLifecycleListing[] = [{
+      id: "expired", ownerId: "u2", title: "Gone", status: "published",
+      expiresAt: "2026-09-12T07:00:00.000Z", isFeatured: true, archivedAt: null,
+      updatedAt: "2026-09-01T00:00:00.000Z", favoritesCount: 2,
+    }];
+    let messageState: JsonMessagesState = { conversations: [], messages: [], notificationOutbox: [] };
+    let journal: JsonLifecycleJournal | null = null;
+    let failAfterEvent = true;
+    let lockHeld = false;
+    const storage: JsonLifecycleStorage = {
+      withLock: async <T>(work: () => Promise<T> | T) => {
+        expect(lockHeld).toBe(false);
+        lockHeld = true;
+        try { return await work(); } finally { lockHeld = false; }
+      },
+      readListings: () => structuredClone(listings),
+      writeListings: (next) => { expect(lockHeld).toBe(true); listings = structuredClone(next); },
+      readMessageState: () => structuredClone(messageState),
+      writeMessageState: (next) => { expect(lockHeld).toBe(true); messageState = structuredClone(next); },
+      readJournal: () => structuredClone(journal),
+      writeJournal: (next) => { expect(lockHeld).toBe(true); journal = structuredClone(next); },
+      afterEventsPersisted: () => {
+        if (failAfterEvent) { failAfterEvent = false; throw new Error("simulated crash"); }
+      },
+    };
+
+    await expect(runJsonListingLifecycle(new Date("2026-09-12T08:00:00.000Z"), storage)).rejects.toThrow("simulated crash");
+    expect(messageState.notificationOutbox).toHaveLength(1);
+    expect(listings[0]).toMatchObject({ status: "published", favoritesCount: 2 });
+    expect(journal).not.toBeNull();
+
+    // A marketplace writer completes after the crashed lock is released.
+    listings[0] = { ...listings[0], title: "Updated title", favoritesCount: 3 };
+    await expect(runJsonListingLifecycle(new Date("2026-09-12T08:01:00.000Z"), storage)).resolves.toEqual({ expiring: 0, expired: 1 });
+
+    expect(messageState.notificationOutbox).toHaveLength(1);
+    expect(listings[0]).toMatchObject({ status: "archived", title: "Updated title", favoritesCount: 3, isFeatured: false });
+    expect(journal).toBeNull();
   });
 
   test("pages saved searches and emits hourly aggregate facts with bounded ids", async () => {

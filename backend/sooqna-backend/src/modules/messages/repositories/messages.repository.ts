@@ -7,7 +7,7 @@ import type { Conversation, Message } from "../messages.types";
 import type { CreateMessageResult } from "../messages.types";
 import { Prisma } from "@prisma/client";
 import { PrismaTransactionRunner, type TransactionContext, type TransactionRunner } from "../../../shared/database/unitOfWork";
-import { withFileLock } from "../../../shared/database/fileLock";
+import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
 import type { EnqueueNotificationEventInput } from "../../notifications/notifications.producer";
 
 type AtomicMessageInput = {
@@ -49,7 +49,6 @@ const messagesStateDataPath = path.resolve(
   process.cwd(),
   "src/modules/messages/repositories/messages-state.data.json"
 );
-const messagesStateLockPath = `${messagesStateDataPath}.lock`;
 
 export type JsonMessagesState = {
   conversations: Conversation[];
@@ -59,18 +58,14 @@ export type JsonMessagesState = {
 
 let jsonMessageWriteQueue: Promise<void> = Promise.resolve();
 
-async function withJsonMessageFileLock<T>(work: () => Promise<T>): Promise<T> {
-  return withFileLock(messagesStateLockPath, work);
-}
-
 function serializeJsonMessageWrite<T>(work: () => Promise<T>): Promise<T> {
-  const lockedWork = () => withJsonMessageFileLock(work);
+  const lockedWork = () => withMarketplaceJsonLock(work);
   const result = jsonMessageWriteQueue.then(lockedWork, lockedWork);
   jsonMessageWriteQueue = result.then(() => undefined, () => undefined);
   return result;
 }
 
-function readJsonMessageState(): JsonMessagesState {
+export function readJsonMessageFallbackStateUnlocked(): JsonMessagesState {
   const state = readJsonArrayFile<JsonMessagesState>(messagesStateDataPath)[0];
   if (state) return state;
   return {
@@ -83,7 +78,7 @@ function readJsonMessageState(): JsonMessagesState {
   };
 }
 
-function writeJsonMessageState(state: JsonMessagesState): void {
+export function writeJsonMessageFallbackStateUnlocked(state: JsonMessagesState): void {
   writeJsonArrayFileAtomically(messagesStateDataPath, [state]);
 }
 
@@ -91,9 +86,9 @@ export function mutateJsonMessageFallbackState<T>(
   work: (state: JsonMessagesState) => Promise<T> | T
 ): Promise<T> {
   return serializeJsonMessageWrite(async () => {
-    const state = readJsonMessageState();
+    const state = readJsonMessageFallbackStateUnlocked();
     const result = await work(state);
-    writeJsonMessageState(state);
+    writeJsonMessageFallbackStateUnlocked(state);
     return result;
   });
 }
@@ -219,9 +214,9 @@ export class PrismaMessagesRepository implements MessagesRepository {
     } catch (error) {
       if (useJsonFallback()) {
         return serializeJsonMessageWrite(async () => {
-          const state = readJsonMessageState();
+          const state = readJsonMessageFallbackStateUnlocked();
           state.conversations.push(conversation);
-          writeJsonMessageState(state);
+          writeJsonMessageFallbackStateUnlocked(state);
           return conversation;
         });
       }
@@ -265,7 +260,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
       };
     } catch (error) {
       if (useJsonFallback()) {
-        return readJsonMessageState().conversations.find((conversation) => conversation.id === id) ?? null;
+        return readJsonMessageFallbackStateUnlocked().conversations.find((conversation) => conversation.id === id) ?? null;
       }
       throw new Error("Failed to fetch conversation.", { cause: error });
     }
@@ -315,7 +310,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
       });
     } catch (error) {
       if (useJsonFallback()) {
-        return readJsonMessageState().conversations
+        return readJsonMessageFallbackStateUnlocked().conversations
           .filter((conversation) => conversation.participantIds.includes(userId))
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       }
@@ -349,11 +344,11 @@ export class PrismaMessagesRepository implements MessagesRepository {
     } catch (error) {
       if (useJsonFallback()) {
         return serializeJsonMessageWrite(async () => {
-          const state = readJsonMessageState();
+          const state = readJsonMessageFallbackStateUnlocked();
           const idx = state.conversations.findIndex((item) => item.id === conversation.id);
           if (idx < 0) throw new Error("Conversation not found");
           state.conversations[idx] = conversation;
-          writeJsonMessageState(state);
+          writeJsonMessageFallbackStateUnlocked(state);
           return conversation;
         });
       }
@@ -384,9 +379,9 @@ export class PrismaMessagesRepository implements MessagesRepository {
     } catch (error) {
       if (useJsonFallback()) {
         return serializeJsonMessageWrite(async () => {
-          const state = readJsonMessageState();
+          const state = readJsonMessageFallbackStateUnlocked();
           state.messages.push(message);
-          writeJsonMessageState(state);
+          writeJsonMessageFallbackStateUnlocked(state);
           return message;
         });
       }
@@ -449,7 +444,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
     enqueue: NotificationEnqueuer
   ): Promise<CreateMessageResult> {
     return serializeJsonMessageWrite(async () => {
-      const state = readJsonMessageState();
+      const state = readJsonMessageFallbackStateUnlocked();
       const existing = state.messages.find(
         (message) =>
           message.conversationId === input.message.conversationId &&
@@ -512,7 +507,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
           updatedAt: input.message.createdAt,
         };
       }
-      writeJsonMessageState(state);
+      writeJsonMessageFallbackStateUnlocked(state);
       return { message: input.message, created: true };
     });
   }
@@ -538,7 +533,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
       }));
     } catch (error) {
       if (useJsonFallback()) {
-        return readJsonMessageState().messages
+        return readJsonMessageFallbackStateUnlocked().messages
           .filter((item) => item.conversationId === conversationId)
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
           .map((item) => ({ ...item, clientRequestId: item.clientRequestId ?? null }));
@@ -565,7 +560,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
     } catch (error) {
       if (useJsonFallback()) {
         return serializeJsonMessageWrite(async () => {
-          const state = readJsonMessageState();
+          const state = readJsonMessageFallbackStateUnlocked();
           let updated = 0;
           state.messages = state.messages.map((message) => {
             if (
@@ -579,7 +574,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
             }
             return message;
           });
-          writeJsonMessageState(state);
+          writeJsonMessageFallbackStateUnlocked(state);
           return updated;
         });
       }
@@ -611,7 +606,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
       }, {});
     } catch (error) {
       if (useJsonFallback()) {
-        const state = readJsonMessageState();
+        const state = readJsonMessageFallbackStateUnlocked();
         const accessibleConversationIds = new Set(
           state.conversations
             .filter((conversation) => conversation.participantIds.includes(userId))

@@ -98,6 +98,18 @@ describe("JSON notification fallback delivery", () => {
     expect(publishSignal).toHaveBeenCalledTimes(1);
   });
 
+  it("cleans the JSON applied-event ledger when its outbox event reaches a terminal state", async () => {
+    const fallbackStore = store();
+    fallbackStore.state.notificationOutbox[0].state = NotificationOutboxState.PROCESSING;
+    fallbackStore.state.notificationOutbox[0].attempts = 1;
+    fallbackStore.notificationState.appliedAggregateEventKeys = ["message:msg-1:recipient-1"];
+    const repository = new JsonNotificationsRepository(fallbackStore);
+
+    await expect(repository.markProcessed("outbox-1", 1, now)).resolves.toBe(true);
+
+    expect(fallbackStore.notificationState.appliedAggregateEventKeys).toEqual([]);
+  });
+
   it("uses createdAt/id cursor pagination and does not rewrite state for reads", async () => {
     const fallbackStore = store();
     const base = {

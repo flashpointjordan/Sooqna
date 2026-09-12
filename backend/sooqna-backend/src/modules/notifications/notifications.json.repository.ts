@@ -142,27 +142,38 @@ export class JsonNotificationsRepository
     });
   }
 
-  markProcessed(id: string, claimAttempt: number, now: Date) {
-    return this.store.mutateMessageState((state) => {
+  async markProcessed(id: string, claimAttempt: number, now: Date) {
+    const result = await this.store.mutateMessageState((state) => {
       const row = state.notificationOutbox.find((item) => item.id === id);
-      if (!row || row.state !== NotificationOutboxState.PROCESSING || Number(row.attempts) !== claimAttempt) return false;
+      if (!row || row.state !== NotificationOutboxState.PROCESSING || Number(row.attempts) !== claimAttempt) return { changed: false, dedupeKey: null };
       row.state = NotificationOutboxState.PROCESSED;
       row.processedAt = now.toISOString();
       row.lastError = null;
       row.updatedAt = now.toISOString();
-      return true;
+      return { changed: true, dedupeKey: typeof row.dedupeKey === "string" ? row.dedupeKey : null };
     });
+    if (result.changed && result.dedupeKey) await this.removeAppliedAggregateEventKey(result.dedupeKey);
+    return result.changed;
   }
 
-  markFailure(id: string, claimAttempt: number, error: string, availableAt: Date, now: Date) {
-    return this.store.mutateMessageState((state) => {
+  async markFailure(id: string, claimAttempt: number, error: string, availableAt: Date, now: Date) {
+    const result = await this.store.mutateMessageState((state) => {
       const row = state.notificationOutbox.find((item) => item.id === id);
-      if (!row || row.state !== NotificationOutboxState.PROCESSING || Number(row.attempts) !== claimAttempt) return NotificationOutboxState.PROCESSING;
+      if (!row || row.state !== NotificationOutboxState.PROCESSING || Number(row.attempts) !== claimAttempt) return { state: NotificationOutboxState.PROCESSING, dedupeKey: null };
       row.state = claimAttempt >= 8 ? NotificationOutboxState.DEAD : NotificationOutboxState.FAILED;
       row.lastError = error.slice(0, 500);
       row.availableAt = availableAt.toISOString();
       row.updatedAt = now.toISOString();
-      return row.state as NotificationOutboxState;
+      return { state: row.state as NotificationOutboxState, dedupeKey: typeof row.dedupeKey === "string" ? row.dedupeKey : null };
+    });
+    if (result.state === NotificationOutboxState.DEAD && result.dedupeKey) await this.removeAppliedAggregateEventKey(result.dedupeKey);
+    return result.state;
+  }
+
+  private async removeAppliedAggregateEventKey(dedupeKey: string): Promise<void> {
+    await this.store.mutateNotificationState((state) => {
+      if (!state.appliedAggregateEventKeys?.includes(dedupeKey)) return;
+      state.appliedAggregateEventKeys = state.appliedAggregateEventKeys.filter((key) => key !== dedupeKey);
     });
   }
 

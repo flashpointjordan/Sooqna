@@ -1,8 +1,13 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import * as path from "node:path";
 import { AppError } from "../../shared/errors/appError";
+import { withMarketplaceJsonLock } from "../../shared/database/marketplaceJsonLock";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fileStore";
-import { mutateJsonMessageFallbackState } from "../messages/repositories/messages.repository";
+import {
+  readJsonMessageFallbackStateUnlocked,
+  writeJsonMessageFallbackStateUnlocked,
+  type JsonMessagesState,
+} from "../messages/repositories/messages.repository";
 import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "./notifications.producer";
 
 export type ModerationAction = "publish" | "reject" | "archive" | "sold" | "feature" | "unfeature";
@@ -155,7 +160,7 @@ export async function runListingLifecycle(
   return { expiring, expired };
 }
 
-type JsonLifecycleListing = {
+export type JsonLifecycleListing = {
   id: string;
   ownerId: string | null;
   title: string;
@@ -165,6 +170,7 @@ type JsonLifecycleListing = {
   archivedAt: string | null;
   updatedAt: string;
   locationCity?: string;
+  [key: string]: unknown;
 };
 type JsonLifecycleState = {
   listings: JsonLifecycleListing[];
@@ -213,14 +219,13 @@ export function runJsonListingLifecycleState(
     const expiresAt = new Date(listing.expiresAt);
     if (!Number.isFinite(expiresAt.getTime()) || expiresAt > warningEnd) continue;
     if (expiresAt <= now) {
-      const enqueued = enqueueJsonLifecycleEvent(state, {
+      enqueueJsonLifecycleEvent(state, {
         aggregateType: "listing",
         aggregateId: listing.id,
         recipientId: listing.ownerId,
         dedupeKey: `listing-expired:${listing.id}:${expiresAt.toISOString()}`,
         payload: { eventType: "LISTING_EXPIRED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title },
       }, now);
-      if (!enqueued) continue;
       listing.status = "archived";
       listing.isFeatured = false;
       listing.archivedAt = now.toISOString();
@@ -240,12 +245,117 @@ export function runJsonListingLifecycleState(
 }
 
 const fallbackListingsPath = path.resolve(process.cwd(), "src/modules/listings/repositories/listings.data.json");
+const fallbackLifecycleJournalPath = path.resolve(process.cwd(), "src/modules/notifications/listing-lifecycle.journal.json");
 
-export function runJsonListingLifecycle(now = new Date()): Promise<{ expiring: number; expired: number }> {
-  return mutateJsonMessageFallbackState((messageState) => {
-    const listings = readJsonArrayFile<JsonLifecycleListing>(fallbackListingsPath);
-    const result = runJsonListingLifecycleState({ listings, notificationOutbox: messageState.notificationOutbox }, now);
-    writeJsonArrayFileAtomically(fallbackListingsPath, listings);
-    return result;
+type JsonExpiryTransition = {
+  listingId: string;
+  ownerId: string;
+  listingTitle: string;
+  expiresAt: string;
+};
+export type JsonLifecycleJournal = { createdAt: string; transitions: JsonExpiryTransition[] };
+
+export type JsonLifecycleStorage = {
+  withLock<T>(work: () => Promise<T> | T): Promise<T>;
+  readListings(): JsonLifecycleListing[];
+  writeListings(listings: JsonLifecycleListing[]): void;
+  readMessageState(): JsonMessagesState;
+  writeMessageState(state: JsonMessagesState): void;
+  readJournal(): JsonLifecycleJournal | null;
+  writeJournal(journal: JsonLifecycleJournal | null): void;
+  afterEventsPersisted?(): Promise<void> | void;
+};
+
+const jsonLifecycleFileStorage: JsonLifecycleStorage = {
+  withLock: withMarketplaceJsonLock,
+  readListings: () => readJsonArrayFile<JsonLifecycleListing>(fallbackListingsPath),
+  writeListings: (listings) => writeJsonArrayFileAtomically(fallbackListingsPath, listings),
+  readMessageState: readJsonMessageFallbackStateUnlocked,
+  writeMessageState: writeJsonMessageFallbackStateUnlocked,
+  readJournal: () => readJsonArrayFile<JsonLifecycleJournal>(fallbackLifecycleJournalPath)[0] ?? null,
+  writeJournal: (journal) => writeJsonArrayFileAtomically(fallbackLifecycleJournalPath, journal ? [journal] : []),
+};
+
+function expiredEvent(transition: JsonExpiryTransition): EnqueueNotificationEventInput {
+  return {
+    aggregateType: "listing",
+    aggregateId: transition.listingId,
+    recipientId: transition.ownerId,
+    dedupeKey: `listing-expired:${transition.listingId}:${transition.expiresAt}`,
+    payload: {
+      eventType: "LISTING_EXPIRED",
+      recipientId: transition.ownerId,
+      listingId: transition.listingId,
+      listingTitle: transition.listingTitle,
+    },
+  };
+}
+
+async function applyJsonLifecycleJournal(
+  journal: JsonLifecycleJournal,
+  now: Date,
+  storage: JsonLifecycleStorage
+): Promise<number> {
+  const messageState = storage.readMessageState();
+  let outboxChanged = false;
+  for (const transition of journal.transitions) {
+    outboxChanged = enqueueJsonLifecycleEvent(
+      { listings: [], notificationOutbox: messageState.notificationOutbox },
+      expiredEvent(transition),
+      new Date(journal.createdAt)
+    ) || outboxChanged;
+  }
+  if (outboxChanged) storage.writeMessageState(messageState);
+  await storage.afterEventsPersisted?.();
+
+  // Re-read after the durable event write. A previous crash may have released
+  // the lock and allowed a legitimate marketplace update before this retry.
+  const listings = storage.readListings();
+  let transitioned = 0;
+  for (const transition of journal.transitions) {
+    const listing = listings.find((item) => item.id === transition.listingId);
+    if (!listing || listing.status !== "published" || listing.expiresAt !== transition.expiresAt) continue;
+    listing.status = "archived";
+    listing.isFeatured = false;
+    listing.archivedAt = now.toISOString();
+    listing.updatedAt = now.toISOString();
+    transitioned += 1;
+  }
+  if (transitioned > 0) storage.writeListings(listings);
+  storage.writeJournal(null);
+  return transitioned;
+}
+
+export function runJsonListingLifecycle(
+  now = new Date(),
+  storage: JsonLifecycleStorage = jsonLifecycleFileStorage
+): Promise<{ expiring: number; expired: number }> {
+  return storage.withLock(async () => {
+    let expired = 0;
+    const pending = storage.readJournal();
+    if (pending) expired += await applyJsonLifecycleJournal(pending, now, storage);
+
+    const listings = storage.readListings();
+    const transitions = listings.flatMap((listing): JsonExpiryTransition[] => {
+      if (listing.status !== "published" || !listing.ownerId || !listing.expiresAt) return [];
+      const expiresAt = new Date(listing.expiresAt);
+      if (!Number.isFinite(expiresAt.getTime()) || expiresAt > now) return [];
+      return [{ listingId: listing.id, ownerId: listing.ownerId, listingTitle: listing.title, expiresAt: expiresAt.toISOString() }];
+    });
+    if (transitions.length > 0) {
+      const journal = { createdAt: now.toISOString(), transitions };
+      storage.writeJournal(journal);
+      expired += await applyJsonLifecycleJournal(journal, now, storage);
+    }
+
+    const latestListings = storage.readListings();
+    const messageState = storage.readMessageState();
+    const before = messageState.notificationOutbox.length;
+    const result = runJsonListingLifecycleState(
+      { listings: latestListings.filter((listing) => listing.expiresAt && new Date(listing.expiresAt) > now), notificationOutbox: messageState.notificationOutbox },
+      now
+    );
+    if (messageState.notificationOutbox.length !== before) storage.writeMessageState(messageState);
+    return { expiring: result.expiring, expired };
   });
 }
