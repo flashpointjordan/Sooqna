@@ -418,51 +418,42 @@ export class PrismaMessagesRepository implements MessagesRepository {
       return this.createMessageAtomicallyInJson(input, enqueue);
     }
 
-    let transactionStarted = false;
-    try {
-      return await this.transactions.run(async (tx) => {
-        transactionStarted = true;
-        const idempotencyScope = [
-          input.message.conversationId,
-          input.message.senderId,
-          input.message.clientRequestId ?? "",
-        ].join(":");
-        await tx.$executeRaw(
-          Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyScope}, 0))`
-        );
-        const existing = await tx.message.findUnique({
-          where: {
-            conversationId_senderId_clientRequestId: {
-              conversationId: input.message.conversationId,
-              senderId: input.message.senderId,
-              clientRequestId: input.message.clientRequestId ?? "",
-            },
+    return this.transactions.run(async (tx) => {
+      const idempotencyScope = [
+        input.message.conversationId,
+        input.message.senderId,
+        input.message.clientRequestId ?? "",
+      ].join(":");
+      await tx.$executeRaw(
+        Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyScope}, 0))`
+      );
+      const existing = await tx.message.findUnique({
+        where: {
+          conversationId_senderId_clientRequestId: {
+            conversationId: input.message.conversationId,
+            senderId: input.message.senderId,
+            clientRequestId: input.message.clientRequestId ?? "",
           },
-        });
-        if (existing) return { message: mapMessage(existing), created: false };
-
-        const created = await tx.message.create({ data: messageCreateData(input.message) });
-        await tx.conversation.updateMany({
-          where: {
-            id: input.conversation.id,
-            OR: [
-              { lastMessageAt: null },
-              { lastMessageAt: { lte: new Date(input.message.createdAt) } },
-            ],
-          },
-          data: conversationUpdateData(input.message),
-        });
-        for (const notification of input.notifications) {
-          await enqueue(notification, tx);
-        }
-        return { message: mapMessage(created), created: true };
+        },
       });
-    } catch (error) {
-      if (useJsonFallback() && !transactionStarted) {
-        return this.createMessageAtomicallyInJson(input, enqueue);
+      if (existing) return { message: mapMessage(existing), created: false };
+
+      const created = await tx.message.create({ data: messageCreateData(input.message) });
+      await tx.conversation.updateMany({
+        where: {
+          id: input.conversation.id,
+          OR: [
+            { lastMessageAt: null },
+            { lastMessageAt: { lte: new Date(input.message.createdAt) } },
+          ],
+        },
+        data: conversationUpdateData(input.message),
+      });
+      for (const notification of input.notifications) {
+        await enqueue(notification, tx);
       }
-      throw error;
-    }
+      return { message: mapMessage(created), created: true };
+    });
   }
 
   private async createMessageAtomicallyInJson(
