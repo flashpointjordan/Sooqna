@@ -3,7 +3,7 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { prisma } from "./config/prisma";
-import { PrismaNotificationsRepository } from "./modules/notifications/notifications.repository";
+import { createNotificationsRepository } from "./modules/notifications/notifications.repository";
 import { NotificationsService } from "./modules/notifications/notifications.service";
 import { createNotificationWorker } from "./modules/notifications/notifications.worker";
 import { createNotificationPublisher, NotificationBroker, setNotificationBroker, setNotificationPublisher } from "./modules/notifications/notifications.broker";
@@ -16,7 +16,7 @@ type LifecycleDependencies = {
 };
 
 export function createServerLifecycle(deps: LifecycleDependencies = {}) {
-  const repository = new PrismaNotificationsRepository();
+  const repository = createNotificationsRepository();
   const broker = new NotificationBroker();
   setNotificationBroker(broker);
   const publishSignal = createNotificationPublisher(broker);

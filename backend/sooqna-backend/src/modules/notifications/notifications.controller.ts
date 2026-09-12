@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../shared/errors/appError";
 import { sendSuccess } from "../../shared/contracts/api";
-import { PrismaNotificationsRepository } from "./notifications.repository";
+import { createNotificationsRepository } from "./notifications.repository";
 import { notificationListQuerySchema } from "./notifications.schemas";
 import { NotificationsService, type NotificationsRepository } from "./notifications.service";
 import { getNotificationBroker, type NotificationPublisher, NotificationBroker, publishNotificationSignal } from "./notifications.broker";
@@ -17,7 +17,7 @@ export function createProductionNotificationsService(repository: NotificationsRe
     catch (error) { productionLogger.warn("notification_signal_publish_failed", { notificationId, error: error instanceof Error ? error.message : String(error) }); }
   } });
 }
-const service = createProductionNotificationsService(new PrismaNotificationsRepository());
+const service = createProductionNotificationsService(createNotificationsRepository());
 
 function userId(req: Request): string {
   const value = req.currentUser?.firebaseUid ?? req.authUser?.uid;

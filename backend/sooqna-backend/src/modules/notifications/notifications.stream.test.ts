@@ -9,7 +9,7 @@ jest.mock("../../routes", () => {
   const express = require("express");
   return { apiRouter: express.Router() };
 });
-jest.mock("./notifications.repository", () => ({ PrismaNotificationsRepository: class {} }));
+jest.mock("./notifications.repository", () => ({ createNotificationsRepository: () => ({}) }));
 const mockAuth = { bearer: true, current: true, active: true, verified: true, uid: "user-a" };
 let mockCurrentGate: Promise<void> | undefined;
 let mockCurrentEntered: (() => void) | undefined;

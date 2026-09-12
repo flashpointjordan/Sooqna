@@ -22,7 +22,7 @@ jest.mock("../../middleware/requireVerifiedEmail", () => ({
     next();
   },
 }));
-jest.mock("./notifications.repository", () => ({ PrismaNotificationsRepository: class {} }));
+jest.mock("./notifications.repository", () => ({ createNotificationsRepository: () => ({}) }));
 import { notificationListQuerySchema, notificationPreferencesUpdateBodySchema } from "./notifications.schemas";
 import { createNotificationsController } from "./notifications.controller";
 import { createNotificationsRouter } from "./notifications.routes";

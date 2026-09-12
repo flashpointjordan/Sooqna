@@ -14,6 +14,9 @@ const mockPrisma = {
 };
 
 jest.mock("../../config/prisma", () => ({ prisma: mockPrisma }));
+jest.mock("../../config/env", () => ({
+  env: { enableCategoriesJsonFallback: false, databaseUrl: "postgresql://test" },
+}));
 
 import { PrismaNotificationsRepository } from "./notifications.repository";
 

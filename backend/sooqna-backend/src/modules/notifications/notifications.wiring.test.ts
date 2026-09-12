@@ -8,7 +8,7 @@ jest.mock("../../app", () => ({ app: { listen: jest.fn() } }));
 jest.mock("../../config/env", () => ({ env: { port: 3000 } }));
 jest.mock("../../config/logger", () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 jest.mock("../../config/prisma", () => ({ prisma: { $disconnect: jest.fn(async () => undefined) } }));
-jest.mock("./notifications.repository", () => ({ PrismaNotificationsRepository: class {} }));
+jest.mock("./notifications.repository", () => ({ createNotificationsRepository: () => ({}) }));
 jest.mock("./notifications.worker", () => ({ createNotificationWorker: mockCreateWorker }));
 
 import { getNotificationBroker, getNotificationPublisher } from "./notifications.broker";

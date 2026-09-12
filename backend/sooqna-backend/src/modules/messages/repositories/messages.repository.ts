@@ -52,7 +52,7 @@ const messagesStateDataPath = path.resolve(
 );
 const messagesStateLockPath = `${messagesStateDataPath}.lock`;
 
-type JsonMessagesState = {
+export type JsonMessagesState = {
   conversations: Conversation[];
   messages: Message[];
   notificationOutbox: Array<Record<string, unknown>>;
@@ -101,6 +101,17 @@ function readJsonMessageState(): JsonMessagesState {
 
 function writeJsonMessageState(state: JsonMessagesState): void {
   writeJsonArrayFileAtomically(messagesStateDataPath, [state]);
+}
+
+export function mutateJsonMessageFallbackState<T>(
+  work: (state: JsonMessagesState) => Promise<T> | T
+): Promise<T> {
+  return serializeJsonMessageWrite(async () => {
+    const state = readJsonMessageState();
+    const result = await work(state);
+    writeJsonMessageState(state);
+    return result;
+  });
 }
 
 function useJsonFallback(): boolean {

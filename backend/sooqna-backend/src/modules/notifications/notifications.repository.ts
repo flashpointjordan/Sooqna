@@ -1,9 +1,18 @@
 import { NotificationOutboxState, Prisma, type NotificationCategory } from "@prisma/client";
 import { AppError } from "../../shared/errors/appError";
 import { prisma } from "../../config/prisma";
+import { env } from "../../config/env";
 import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
 import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
 import type { NotificationOutboxRecord, NotificationOutboxRepository } from "./notifications.worker";
+import { JsonNotificationsRepository } from "./notifications.json.repository";
+export { JsonNotificationsRepository, type JsonNotificationsStore } from "./notifications.json.repository";
+
+export function createNotificationsRepository(): NotificationsRepository & NotificationOutboxRepository {
+  return env.enableCategoriesJsonFallback && !env.databaseUrl
+    ? new JsonNotificationsRepository()
+    : new PrismaNotificationsRepository();
+}
 
 function cursorWhere(cursor: string | undefined): Prisma.NotificationWhereInput | undefined {
   if (!cursor) return undefined;

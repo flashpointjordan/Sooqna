@@ -148,10 +148,10 @@ export async function runNotificationWorkerOnce(deps: { worker: Pick<ReturnType<
 
 if (require.main === module) {
   void (async () => {
-    const [{ PrismaNotificationsRepository }, { NotificationsService }, { logger }] = await Promise.all([
+    const [{ createNotificationsRepository }, { NotificationsService }, { logger }] = await Promise.all([
       import("./notifications.repository"), import("./notifications.service"), import("../../config/logger"),
     ]);
-    const repository = new PrismaNotificationsRepository();
+    const repository = createNotificationsRepository();
     const { prisma } = await import("../../config/prisma");
     await runNotificationWorkerOnce({ worker: createNotificationWorker({ repository, service: new NotificationsService(repository), logger }), disconnect: () => prisma.$disconnect() });
   })().catch((error: unknown) => { process.exitCode = 1; process.stderr.write(`Notification worker failed: ${errorMessage(error)}\n`); });
