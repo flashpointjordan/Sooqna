@@ -138,4 +138,22 @@ describe("NotificationsService", () => {
     await service.markRead("user-a", "read"); await service.delete("user-a", "deleted"); await service.markAllRead("user-a");
     expect(publishSignal).not.toHaveBeenCalled();
   });
+
+  it("retains favorite freshness metadata internally but omits it from API DTOs", async () => {
+    const repo = new MemoryRepo();
+    const service = new NotificationsService(repo, { now: () => now });
+    const result = await service.createFromEvent(NotificationType.LISTING_FAVORITED_AGGREGATE, {
+      eventType: NotificationType.LISTING_FAVORITED_AGGREGATE,
+      recipientId: "user-a",
+      listingId: "listing-1",
+      listingTitle: "Bike",
+      favoriteCount: 3,
+      sourceTimestamp: "2026-08-24T11:55:00.000Z",
+      sourceId: "favorite-cycle-1",
+      sourceVersion: "41",
+    });
+
+    expect(repo.rows[0].metadata).toMatchObject({ sourceTimestamp: "2026-08-24T11:55:00.000Z", sourceId: "favorite-cycle-1", sourceVersion: "41" });
+    expect(result?.metadata).toEqual({ listingId: "listing-1", favoriteCount: 3 });
+  });
 });

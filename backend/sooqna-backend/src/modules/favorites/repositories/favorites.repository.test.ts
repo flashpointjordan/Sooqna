@@ -5,6 +5,7 @@ const mockCount = jest.fn();
 const mockDeleteMany = jest.fn();
 const mockListingUpdateMany = jest.fn();
 const mockTransaction = jest.fn();
+const mockListingFindFirst = jest.fn();
 const mockReadFavorites = jest.fn();
 const mockWriteFavorites = jest.fn();
 const mockWithFileLock = jest.fn();
@@ -16,7 +17,7 @@ const transactionClient = {
   listing: { updateMany: mockListingUpdateMany },
 };
 
-jest.mock("../../../config/prisma", () => ({ prisma: { $transaction: mockTransaction } }));
+jest.mock("../../../config/prisma", () => ({ prisma: { $transaction: mockTransaction, listing: { findFirst: mockListingFindFirst } } }));
 jest.mock("../../../config/env", () => ({ env: mockEnv }));
 jest.mock("../../../utils/fileStore", () => ({
   readJsonArrayFile: mockReadFavorites,
@@ -25,6 +26,7 @@ jest.mock("../../../utils/fileStore", () => ({
 jest.mock("../../../shared/database/fileLock", () => ({ withFileLock: mockWithFileLock }));
 
 import { PrismaFavoritesRepository } from "./favorites.repository";
+import { PrismaListingsRepository } from "../../listings/repositories/listings.repository";
 
 describe("PrismaFavoritesRepository favorite mutation snapshots", () => {
   beforeEach(() => {
@@ -95,5 +97,35 @@ describe("PrismaFavoritesRepository favorite mutation snapshots", () => {
     expect(duplicate).toEqual({ created: false, favoriteCount: 1 });
     expect(second).toMatchObject({ created: true, sourceVersion: "2", favoriteCount: 1 });
     expect(mockWithFileLock).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps the persisted JSON listing counter synchronized after add and remove", async () => {
+    mockEnv.enableCategoriesJsonFallback = true;
+    mockTransaction.mockRejectedValue(new Error("database unavailable"));
+    mockListingFindFirst.mockRejectedValue(new Error("database unavailable"));
+    let storedFavorites: Array<Record<string, unknown>> = [];
+    let storedListings: Array<Record<string, unknown>> = [
+      { id: "listing-1", deletedAt: null, favoritesCount: 0 },
+    ];
+    mockReadFavorites.mockImplementation((filePath: string) =>
+      filePath.endsWith("favorites.data.json") ? storedFavorites : storedListings
+    );
+    mockWriteFavorites.mockImplementation((filePath: string, rows: Array<Record<string, unknown>>) => {
+      if (filePath.endsWith("favorites.data.json")) storedFavorites = rows;
+      else storedListings = rows;
+    });
+    const favorites = new PrismaFavoritesRepository();
+    const listings = new PrismaListingsRepository();
+
+    await favorites.upsert({ userId: "actor-1", listingId: "listing-1", createdAt: "2026-08-24T15:42:00.000Z" });
+    await expect(listings.findById("listing-1")).resolves.toMatchObject({ favoritesCount: 1 });
+
+    storedListings[0].favoritesCount = 0;
+    await favorites.upsert({ userId: "actor-1", listingId: "listing-1", createdAt: "2026-08-24T15:42:00.000Z" });
+    await expect(listings.findById("listing-1")).resolves.toMatchObject({ favoritesCount: 1 });
+
+    await favorites.remove("actor-1", "listing-1");
+    await expect(listings.findById("listing-1")).resolves.toMatchObject({ favoritesCount: 0 });
+    expect(mockWriteFavorites.mock.calls.filter(([filePath]) => String(filePath).endsWith("listings.data.json"))).toHaveLength(3);
   });
 });

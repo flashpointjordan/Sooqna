@@ -3,7 +3,8 @@ import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
 import { parseIso, toIso } from "../../../shared/utils/dates";
 import { buildListingSearchText, normalizeArabic } from "../../../shared/utils/arabic";
-import { readJsonArrayFile, writeJsonArrayFile } from "../../../utils/fileStore";
+import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
+import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../../utils/fileStore";
 import type { Listing } from "../listings.types";
 
 export type PaginationOptions = {
@@ -146,10 +147,12 @@ export class PrismaListingsRepository implements ListingsRepository {
       return mapListing(created);
     } catch (error) {
       if (useJsonFallback()) {
-        const listings = readJsonArrayFile<Listing>(listingsDataPath);
-        listings.push(listing);
-        writeJsonArrayFile(listingsDataPath, listings);
-        return listing;
+        return withMarketplaceJsonLock(async () => {
+          const listings = readJsonArrayFile<Listing>(listingsDataPath);
+          listings.push(listing);
+          writeJsonArrayFileAtomically(listingsDataPath, listings);
+          return listing;
+        });
       }
       throw new Error("Failed to create listing.", { cause: error });
     }
@@ -362,12 +365,14 @@ export class PrismaListingsRepository implements ListingsRepository {
       return mapListing(updated);
     } catch (error) {
       if (useJsonFallback()) {
-        const listings = readJsonArrayFile<Listing>(listingsDataPath);
-        const idx = listings.findIndex((item) => item.id === id);
-        if (idx < 0) throw new Error("Listing not found.");
-        Object.assign(listings[idx], fields);
-        writeJsonArrayFile(listingsDataPath, listings);
-        return listings[idx];
+        return withMarketplaceJsonLock(async () => {
+          const listings = readJsonArrayFile<Listing>(listingsDataPath);
+          const idx = listings.findIndex((item) => item.id === id);
+          if (idx < 0) throw new Error("Listing not found.");
+          Object.assign(listings[idx], fields);
+          writeJsonArrayFileAtomically(listingsDataPath, listings);
+          return listings[idx];
+        });
       }
       throw new Error("Listing not found.", { cause: error });
     }
@@ -423,12 +428,14 @@ export class PrismaListingsRepository implements ListingsRepository {
       return mapListing(updated);
     } catch (error) {
       if (useJsonFallback()) {
-        const listings = readJsonArrayFile<Listing>(listingsDataPath);
-        const idx = listings.findIndex((item) => item.id === id);
-        if (idx < 0) throw new Error("Listing not found.");
-        listings[idx] = listing;
-        writeJsonArrayFile(listingsDataPath, listings);
-        return listing;
+        return withMarketplaceJsonLock(async () => {
+          const listings = readJsonArrayFile<Listing>(listingsDataPath);
+          const idx = listings.findIndex((item) => item.id === id);
+          if (idx < 0) throw new Error("Listing not found.");
+          listings[idx] = listing;
+          writeJsonArrayFileAtomically(listingsDataPath, listings);
+          return listing;
+        });
       }
       throw new Error("Listing not found.", { cause: error });
     }

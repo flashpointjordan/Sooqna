@@ -2,10 +2,11 @@ import * as path from "node:path";
 import { Prisma } from "@prisma/client";
 import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
-import { withFileLock } from "../../../shared/database/fileLock";
+import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../../utils/fileStore";
 import { generateId } from "../../../utils/ids";
 import type { FavoriteRecord } from "../favorites.types";
+import type { Listing } from "../../listings/listings.types";
 
 export type FavoriteUpsertResult =
   | { created: true; sourceId: string; sourceTimestamp: string; sourceVersion: string; favoriteCount: number }
@@ -24,7 +25,10 @@ const favoritesDataPath = path.resolve(
   process.cwd(),
   "src/modules/favorites/repositories/favorites.data.json"
 );
-const favoritesDataLockPath = `${favoritesDataPath}.lock`;
+const listingsDataPath = path.resolve(
+  process.cwd(),
+  "src/modules/listings/repositories/listings.data.json"
+);
 
 function useJsonFallback(): boolean {
   return env.enableCategoriesJsonFallback;
@@ -84,12 +88,14 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
       });
     } catch (error) {
       if (useJsonFallback()) {
-        return withFileLock(favoritesDataLockPath, async () => {
+        return withMarketplaceJsonLock(async () => {
           const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
           const active = items.filter((item) => !item.deletedAt);
           const exists = active.some((item) => item.userId === record.userId && item.listingId === record.listingId);
           if (exists) {
-            return { created: false, favoriteCount: active.filter((item) => item.listingId === record.listingId).length };
+            const favoriteCount = active.filter((item) => item.listingId === record.listingId).length;
+            updateJsonListingFavoriteCount(record.listingId, favoriteCount);
+            return { created: false, favoriteCount };
           }
           const sourceId = generateId("fav");
           const sourceVersion = (items.reduce((highest, item) => {
@@ -100,6 +106,7 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
           items.push({ ...record, id: sourceId, notificationVersion: sourceVersion, deletedAt: null });
           const favoriteCount = items.filter((item) => item.listingId === record.listingId && !item.deletedAt).length;
           writeJsonArrayFileAtomically(favoritesDataPath, items);
+          updateJsonListingFavoriteCount(record.listingId, favoriteCount);
           return { created: true, sourceId, sourceTimestamp: record.createdAt, sourceVersion, favoriteCount };
         });
       }
@@ -118,12 +125,13 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
       });
     } catch (error) {
       if (useJsonFallback()) {
-        return withFileLock(favoritesDataLockPath, async () => {
+        return withMarketplaceJsonLock(async () => {
           const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
           const target = items.find((item) => item.userId === userId && item.listingId === listingId && !item.deletedAt);
           if (target) target.deletedAt = new Date().toISOString();
           const favoriteCount = items.filter((item) => item.listingId === listingId && !item.deletedAt).length;
           if (target) writeJsonArrayFileAtomically(favoritesDataPath, items);
+          updateJsonListingFavoriteCount(listingId, favoriteCount);
           return { removed: Boolean(target), favoriteCount };
         });
       }
@@ -144,5 +152,13 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
       throw new Error("Failed to count favorites.", { cause: error });
     }
   }
+}
+
+function updateJsonListingFavoriteCount(listingId: string, favoriteCount: number): void {
+  const listings = readJsonArrayFile<Listing>(listingsDataPath);
+  const listing = listings.find((item) => item.id === listingId && item.deletedAt === null);
+  if (!listing || listing.favoritesCount === favoriteCount) return;
+  listing.favoritesCount = favoriteCount;
+  writeJsonArrayFileAtomically(listingsDataPath, listings);
 }
 

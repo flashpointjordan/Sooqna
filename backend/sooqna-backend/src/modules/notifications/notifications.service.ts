@@ -69,6 +69,11 @@ export class NotificationsService {
   async signalPersisted(userId: string, notificationId: string, unreadCount?: number): Promise<void> { await this.publishSignal(userId, notificationId, unreadCount ?? await this.unreadCount(userId)); }
   private async signal(userId: string, notificationId: string): Promise<void> { await this.publishSignal(userId, notificationId, await this.unreadCount(userId)); }
 }
-function toDto(row: StoredNotification): NotificationDto { return { id: row.id, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, readAt: row.readAt?.toISOString() ?? null, createdAt: row.createdAt.toISOString() }; }
+function toDto(row: StoredNotification): NotificationDto { return { id: row.id, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: publicMetadata(row.metadata), readAt: row.readAt?.toISOString() ?? null, createdAt: row.createdAt.toISOString() }; }
+
+const INTERNAL_METADATA_KEYS = new Set(["sourceTimestamp", "sourceId", "sourceVersion"]);
+function publicMetadata(metadata: NotificationMetadata): NotificationMetadata {
+  return Object.fromEntries(Object.entries(metadata).filter(([key]) => !INTERNAL_METADATA_KEYS.has(key)));
+}
 function notFound(): AppError { return new AppError(404, "Notification not found.", "NOT_FOUND"); }
 function isUniqueConflict(error: unknown): boolean { return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "P2002"; }
