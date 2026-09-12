@@ -50,3 +50,10 @@ export type CreateMessageResult = {
   created: boolean;
 };
 
+export type ConversationReadResult = {
+  updatedMessages: number;
+  updatedNotifications: number;
+  messageUnreadTotal: number;
+  notificationUnreadTotal: number;
+};
+

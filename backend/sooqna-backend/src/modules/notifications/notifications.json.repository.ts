@@ -6,7 +6,7 @@ import {
   type NotificationType,
 } from "@prisma/client";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fileStore";
-import { withFileLock } from "../../shared/database/fileLock";
+import { withMarketplaceJsonLock } from "../../shared/database/marketplaceJsonLock";
 import {
   mutateJsonMessageFallbackState,
   type JsonMessagesState,
@@ -24,6 +24,7 @@ import type {
   NotificationOutboxRepository,
 } from "./notifications.worker";
 import { isStaleAggregate, mergeSavedSearchAggregate } from "./notifications.aggregate";
+import { recoverJsonConversationReadUnlocked } from "../messages/repositories/conversationReadJsonCoordinator";
 
 type JsonNotificationState = {
   notifications: StoredNotification[];
@@ -41,7 +42,6 @@ const notificationStatePath = path.resolve(
   process.cwd(),
   "src/modules/notifications/notifications-state.data.json"
 );
-const notificationStateLockPath = `${notificationStatePath}.lock`;
 let notificationStateQueue: Promise<void> = Promise.resolve();
 
 function hydrateNotification(row: StoredNotification): StoredNotification {
@@ -58,6 +58,7 @@ function hydrateNotification(row: StoredNotification): StoredNotification {
 const fileStore: JsonNotificationsStore = {
   mutateMessageState: mutateJsonMessageFallbackState,
   async readNotificationState() {
+    recoverJsonConversationReadUnlocked();
     const stored = readJsonArrayFile<JsonNotificationState>(notificationStatePath)[0];
     return stored
       ? { ...stored, notifications: stored.notifications.map(hydrateNotification), appliedAggregateEventKeys: stored.appliedAggregateEventKeys ?? [] }
@@ -70,7 +71,7 @@ const fileStore: JsonNotificationsStore = {
       writeJsonArrayFileAtomically(notificationStatePath, [state]);
       return result;
     };
-    const lockedRun = () => withFileLock(notificationStateLockPath, run);
+    const lockedRun = () => withMarketplaceJsonLock(run);
     const result = notificationStateQueue.then(lockedRun, lockedRun);
     notificationStateQueue = result.then(() => undefined, () => undefined);
     return result;

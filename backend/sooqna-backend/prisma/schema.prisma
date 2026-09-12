@@ -114,6 +114,7 @@ model Notification {
 
   @@index([userId, deletedAt, createdAt])
   @@index([userId, readAt, deletedAt])
+  @@index([userId, type, entityType, entityId, readAt, deletedAt, expiresAt], map: "notifications_message_read_lookup_idx")
   @@index([aggregationKey, createdAt])
 }
 
@@ -321,7 +322,6 @@ model Message {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@unique([conversationId, senderId, clientRequestId], map: "messages_conversation_sender_request_unique")
-  @@index([conversationId])
   @@index([conversationId, isRead, deletedAt, senderId], map: "messages_unread_lookup_idx")
 }
 

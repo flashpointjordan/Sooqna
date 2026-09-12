@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 const mockFindListingById = jest.fn();
 const mockCreateConversationInService = jest.fn();
 const mockCreateMessageInService = jest.fn();
+const mockMarkConversationReadInService = jest.fn();
 const mockLogAuditEvent = jest.fn();
 
 jest.mock("../listings/repositories/listings.repository", () => ({
@@ -15,6 +16,7 @@ jest.mock("./messages.service", () => ({
   MessagesService: jest.fn().mockImplementation(() => ({
     createConversation: mockCreateConversationInService,
     createMessage: mockCreateMessageInService,
+    markConversationRead: mockMarkConversationReadInService,
   })),
 }));
 
@@ -37,6 +39,7 @@ describe("message conversation identity", () => {
     mockFindListingById.mockReset();
     mockCreateConversationInService.mockReset();
     mockCreateMessageInService.mockReset();
+    mockMarkConversationReadInService.mockReset();
     mockLogAuditEvent.mockReset();
   });
 
@@ -185,5 +188,37 @@ describe("message conversation identity", () => {
     await expect(createConversation(req, res as unknown as Response)).rejects.toThrow(
       "Listing is not available for messaging."
     );
+  });
+
+  it("returns both reconciled read counters and privacy-safe unread totals", async () => {
+    const result = {
+      updatedMessages: 2,
+      updatedNotifications: 2,
+      messageUnreadTotal: 0,
+      notificationUnreadTotal: 0,
+    };
+    mockMarkConversationReadInService.mockResolvedValue(result);
+    const req = {
+      currentUser: { firebaseUid: "reader-1" },
+      params: { conversationId: "conv-1" },
+    } as unknown as Request;
+    const res = createResponse();
+
+    const { markConversationRead } = await import("./messages.controller");
+    await markConversationRead(req, res as unknown as Response);
+
+    expect(mockMarkConversationReadInService).toHaveBeenCalledWith("conv-1", "reader-1");
+    expect(mockLogAuditEvent).toHaveBeenCalledWith({
+      actorId: "reader-1",
+      action: "message.read",
+      targetType: "conversation",
+      targetId: "conv-1",
+      metadata: { updatedMessages: 2, updatedNotifications: 2 },
+    });
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      ...result,
+      updatedCount: result.updatedMessages,
+    });
   });
 });

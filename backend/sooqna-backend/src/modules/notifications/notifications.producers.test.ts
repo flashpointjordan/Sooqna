@@ -39,7 +39,6 @@ function atomicRepo(overrides: Partial<MessagesRepository> = {}): jest.Mocked<Me
       return { message, created: true };
     }),
     listMessages: jest.fn(),
-    markConversationMessagesRead: jest.fn(),
     getUnreadCountMapForUser: jest.fn(),
     ...overrides,
   } as jest.Mocked<MessagesRepository>;

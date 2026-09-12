@@ -3,12 +3,18 @@ import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
 import { parseIso, toIso } from "../../../shared/utils/dates";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../../utils/fileStore";
-import type { Conversation, Message } from "../messages.types";
+import type { Conversation, ConversationReadResult, Message } from "../messages.types";
 import type { CreateMessageResult } from "../messages.types";
 import { Prisma } from "@prisma/client";
 import { PrismaTransactionRunner, type TransactionContext, type TransactionRunner } from "../../../shared/database/unitOfWork";
 import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
 import type { EnqueueNotificationEventInput } from "../../notifications/notifications.producer";
+import {
+  commitJsonConversationReadUnlocked,
+  messagesStateDataPath,
+  readJsonNotificationStateUnlocked,
+  recoverJsonConversationReadUnlocked,
+} from "./conversationReadJsonCoordinator";
 
 type AtomicMessageInput = {
   message: Message;
@@ -29,7 +35,11 @@ export interface MessagesRepository {
   createMessage(message: Message): Promise<Message>;
   createMessageAtomically(input: AtomicMessageInput, enqueue: NotificationEnqueuer): Promise<CreateMessageResult>;
   listMessages(conversationId: string): Promise<Message[]>;
-  markConversationMessagesRead(conversationId: string, readerId: string): Promise<number>;
+  reconcileConversationRead(
+    conversationId: string,
+    readerId: string,
+    now: Date
+  ): Promise<ConversationReadResult>;
   getUnreadCountMapForUser(userId: string): Promise<Record<string, number>>;
 }
 
@@ -45,11 +55,6 @@ const legacyNotificationOutboxDataPath = path.resolve(
   process.cwd(),
   "src/modules/notifications/notification-outbox.data.json"
 );
-const messagesStateDataPath = path.resolve(
-  process.cwd(),
-  "src/modules/messages/repositories/messages-state.data.json"
-);
-
 export type JsonMessagesState = {
   conversations: Conversation[];
   messages: Message[];
@@ -66,6 +71,7 @@ function serializeJsonMessageWrite<T>(work: () => Promise<T>): Promise<T> {
 }
 
 export function readJsonMessageFallbackStateUnlocked(): JsonMessagesState {
+  recoverJsonConversationReadUnlocked();
   const state = readJsonArrayFile<JsonMessagesState>(messagesStateDataPath)[0];
   if (state) return state;
   return {
@@ -542,49 +548,128 @@ export class PrismaMessagesRepository implements MessagesRepository {
     }
   }
 
-  async markConversationMessagesRead(conversationId: string, readerId: string): Promise<number> {
-    try {
-      const result = await prisma.message.updateMany({
+  async reconcileConversationRead(
+    conversationId: string,
+    readerId: string,
+    now: Date
+  ): Promise<ConversationReadResult> {
+    if (useJsonFallback() && !env.databaseUrl) {
+      return serializeJsonMessageWrite(async () => {
+        const messageState = readJsonMessageFallbackStateUnlocked();
+        const notificationState = readJsonNotificationStateUnlocked();
+        let updatedMessages = 0;
+        let updatedNotifications = 0;
+
+        messageState.messages = messageState.messages.map((message) => {
+          if (
+            message.conversationId === conversationId &&
+            message.senderId !== readerId &&
+            !message.isRead &&
+            message.deletedAt === null
+          ) {
+            updatedMessages += 1;
+            return { ...message, isRead: true, readAt: now.toISOString() };
+          }
+          return message;
+        });
+        notificationState.notifications = notificationState.notifications.map((notification) => {
+          if (
+            notification.userId === readerId &&
+            notification.type === "MESSAGE_RECEIVED" &&
+            notification.entityType === "conversation" &&
+            notification.entityId === conversationId &&
+            !notification.readAt &&
+            !notification.deletedAt &&
+            new Date(notification.expiresAt) > now
+          ) {
+            updatedNotifications += 1;
+            return { ...notification, readAt: now, updatedAt: now };
+          }
+          return notification;
+        });
+
+        const ownedConversations = new Set(
+          messageState.conversations
+            .filter((conversation) => conversation.participantIds.includes(readerId))
+            .map((conversation) => conversation.id)
+        );
+        const messageUnreadTotal = messageState.messages.filter(
+          (message) =>
+            ownedConversations.has(message.conversationId) &&
+            message.senderId !== readerId &&
+            !message.isRead &&
+            message.deletedAt === null
+        ).length;
+        const notificationUnreadTotal = notificationState.notifications.filter(
+          (notification) =>
+            notification.userId === readerId &&
+            !notification.readAt &&
+            !notification.deletedAt &&
+            new Date(notification.expiresAt) > now
+        ).length;
+
+        commitJsonConversationReadUnlocked(messageState, notificationState);
+        return {
+          updatedMessages,
+          updatedNotifications,
+          messageUnreadTotal,
+          notificationUnreadTotal,
+        };
+      });
+    }
+    return this.transactions.run(async (tx) => {
+      const messages = await tx.message.updateMany({
         where: {
           conversationId,
           senderId: { not: readerId },
           isRead: false,
           deletedAt: null,
         },
-        data: {
-          isRead: true,
-          readAt: new Date(),
-        },
+        data: { isRead: true, readAt: now },
       });
-      return result.count;
-    } catch (error) {
-      if (useJsonFallback()) {
-        return serializeJsonMessageWrite(async () => {
-          const state = readJsonMessageFallbackStateUnlocked();
-          let updated = 0;
-          state.messages = state.messages.map((message) => {
-            if (
-              message.conversationId === conversationId &&
-              message.senderId !== readerId &&
-              !message.isRead &&
-              message.deletedAt === null
-            ) {
-              updated += 1;
-              return { ...message, isRead: true, readAt: new Date().toISOString() };
-            }
-            return message;
-          });
-          writeJsonMessageFallbackStateUnlocked(state);
-          return updated;
-        });
-      }
-      throw new Error("Failed to mark conversation messages as read.", { cause: error });
-    }
+      const notifications = await tx.notification.updateMany({
+        where: {
+          userId: readerId,
+          type: "MESSAGE_RECEIVED",
+          entityType: "conversation",
+          entityId: conversationId,
+          readAt: null,
+          deletedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { readAt: now },
+      });
+      const [messageUnreadTotal, notificationUnreadTotal] = await Promise.all([
+        tx.message.count({
+          where: {
+            senderId: { not: readerId },
+            isRead: false,
+            deletedAt: null,
+            conversation: { participants: { some: { userId: readerId } } },
+          },
+        }),
+        tx.notification.count({
+          where: {
+            userId: readerId,
+            readAt: null,
+            deletedAt: null,
+            expiresAt: { gt: now },
+          },
+        }),
+      ]);
+      return {
+        updatedMessages: messages.count,
+        updatedNotifications: notifications.count,
+        messageUnreadTotal,
+        notificationUnreadTotal,
+      };
+    });
   }
 
   async getUnreadCountMapForUser(userId: string): Promise<Record<string, number>> {
     try {
-      const unreadMessages = await prisma.message.findMany({
+      const unreadMessages = await prisma.message.groupBy({
+        by: ["conversationId"],
         where: {
           senderId: { not: userId },
           isRead: false,
@@ -595,13 +680,11 @@ export class PrismaMessagesRepository implements MessagesRepository {
             },
           },
         },
-        select: {
-          conversationId: true,
-        },
+        _count: { _all: true },
       });
 
       return unreadMessages.reduce<Record<string, number>>((acc, item) => {
-        acc[item.conversationId] = (acc[item.conversationId] ?? 0) + 1;
+        acc[item.conversationId] = item._count._all;
         return acc;
       }, {});
     } catch (error) {

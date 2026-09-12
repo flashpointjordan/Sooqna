@@ -2,10 +2,11 @@ import { generateId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { AppError } from "../../shared/errors/appError";
 import type { MessagesRepository } from "./repositories/messages.repository";
-import type { Conversation, CreateMessageInput, Message } from "./messages.types";
+import type { Conversation, ConversationReadResult, CreateMessageInput, Message } from "./messages.types";
 import type { CreateMessageResult } from "./messages.types";
 import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "../notifications/notifications.producer";
 import type { TransactionContext } from "../../shared/database/unitOfWork";
+import { publishNotificationSignal, type NotificationPublisher } from "../notifications/notifications.broker";
 
 type CreateConversationInput = {
   participantIds: string[];
@@ -21,7 +22,9 @@ export class MessagesService {
     private readonly enqueue: (
       input: EnqueueNotificationEventInput,
       tx?: TransactionContext
-    ) => Promise<unknown> = enqueueNotificationEvent
+    ) => Promise<unknown> = enqueueNotificationEvent,
+    private readonly publishSignal: NotificationPublisher = publishNotificationSignal,
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async createConversation(input: CreateConversationInput): Promise<Conversation> {
@@ -174,9 +177,11 @@ export class MessagesService {
     return this.repo.listMessages(conversationId);
   }
 
-  async markConversationRead(conversationId: string, userId: string): Promise<number> {
+  async markConversationRead(conversationId: string, userId: string): Promise<ConversationReadResult> {
     await this.getConversationForUser(conversationId, userId);
-    return this.repo.markConversationMessagesRead(conversationId, userId);
+    const result = await this.repo.reconcileConversationRead(conversationId, userId, this.now());
+    await this.publishSignal(userId, "", result.notificationUnreadTotal);
+    return result;
   }
 
   async getUnreadSummary(userId: string): Promise<{

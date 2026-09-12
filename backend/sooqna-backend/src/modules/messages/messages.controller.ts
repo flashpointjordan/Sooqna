@@ -112,15 +112,18 @@ export async function getConversationMessages(req: Request, res: Response): Prom
 
 export async function markConversationRead(req: Request, res: Response): Promise<void> {
   const uid = requireTrustedUid(req);
-  const updatedCount = await service.markConversationRead(req.params.conversationId, uid);
+  const result = await service.markConversationRead(req.params.conversationId, uid);
   await logAuditEvent({
     actorId: uid,
     action: "message.read",
     targetType: "conversation",
     targetId: req.params.conversationId,
-    metadata: { updatedCount },
+    metadata: {
+      updatedMessages: result.updatedMessages,
+      updatedNotifications: result.updatedNotifications,
+    },
   });
-  res.json({ success: true, updatedCount });
+  res.json({ success: true, ...result, updatedCount: result.updatedMessages });
 }
 
 export async function getUnreadSummary(req: Request, res: Response): Promise<void> {

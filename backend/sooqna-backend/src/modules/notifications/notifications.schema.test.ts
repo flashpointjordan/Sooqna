@@ -6,6 +6,13 @@ const migration = readFileSync(
   resolve(__dirname, "../../../prisma/migrations/20260824000100_add_notifications/migration.sql"),
   "utf8"
 );
+const readOptimizationMigration = readFileSync(
+  resolve(
+    __dirname,
+    "../../../prisma/migrations/20260912000100_optimize_conversation_read_queries/migration.sql"
+  ),
+  "utf8"
+);
 
 const notificationEnums = {
   NotificationCategory: ["MESSAGES", "LISTINGS", "ENGAGEMENT", "SAVED_SEARCHES", "SYSTEM", "SECURITY"],
@@ -124,6 +131,7 @@ describe("notification Prisma schema and migration contract", () => {
     expect(modelDirectives(notification, "index")).toEqual([
       "@@index([userId, deletedAt, createdAt])",
       "@@index([userId, readAt, deletedAt])",
+      '@@index([userId, type, entityType, entityId, readAt, deletedAt, expiresAt], map: "notifications_message_read_lookup_idx")',
       "@@index([aggregationKey, createdAt])",
     ]);
 
@@ -267,6 +275,22 @@ describe("notification Prisma schema and migration contract", () => {
     );
     expect(migration).toContain(
       'CREATE INDEX "messages_unread_lookup_idx" ON "Message"("conversationId", "isRead", "deletedAt", "senderId")'
+    );
+  });
+
+  it("keeps only the useful message lookup index and indexes cross-read notifications", () => {
+    const message = block(prismaSchema, "model Message");
+    const notification = block(prismaSchema, "model Notification");
+
+    expect(modelDirectives(message, "index")).not.toContain("@@index([conversationId])");
+    expect(modelDirectives(notification, "index")).toContain(
+      '@@index([userId, type, entityType, entityId, readAt, deletedAt, expiresAt], map: "notifications_message_read_lookup_idx")'
+    );
+    expect(readOptimizationMigration).toContain(
+      'DROP INDEX IF EXISTS "Message_conversationId_idx"'
+    );
+    expect(readOptimizationMigration.replace(/\s+/g, " ")).toContain(
+      'CREATE INDEX "notifications_message_read_lookup_idx" ON "Notification"("userId", "type", "entityType", "entityId", "readAt", "deletedAt", "expiresAt")'
     );
   });
 });
