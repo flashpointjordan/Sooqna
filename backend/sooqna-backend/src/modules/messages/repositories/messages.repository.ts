@@ -9,6 +9,7 @@ import { Prisma } from "@prisma/client";
 import { PrismaTransactionRunner, type TransactionContext, type TransactionRunner } from "../../../shared/database/unitOfWork";
 import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
 import type { EnqueueNotificationEventInput } from "../../notifications/notifications.producer";
+import { AppError } from "../../../shared/errors/appError";
 import {
   commitJsonConversationReadUnlocked,
   messagesStateDataPath,
@@ -557,6 +558,14 @@ export class PrismaMessagesRepository implements MessagesRepository {
       return serializeJsonMessageWrite(async () => {
         const messageState = readJsonMessageFallbackStateUnlocked();
         const notificationState = readJsonNotificationStateUnlocked();
+        const conversation = messageState.conversations.find((item) => item.id === conversationId);
+        if (!conversation?.participantIds.includes(readerId)) {
+          throw new AppError(
+            403,
+            "You are not a participant in this conversation.",
+            "FORBIDDEN"
+          );
+        }
         let updatedMessages = 0;
         let updatedNotifications = 0;
 
@@ -618,12 +627,29 @@ export class PrismaMessagesRepository implements MessagesRepository {
       });
     }
     return this.transactions.run(async (tx) => {
+      const participant = await tx.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`
+          SELECT "id"
+          FROM "ConversationParticipant"
+          WHERE "conversationId" = ${conversationId}
+            AND "userId" = ${readerId}
+          FOR SHARE
+        `
+      );
+      if (participant.length === 0) {
+        throw new AppError(
+          403,
+          "You are not a participant in this conversation.",
+          "FORBIDDEN"
+        );
+      }
       const messages = await tx.message.updateMany({
         where: {
           conversationId,
           senderId: { not: readerId },
           isRead: false,
           deletedAt: null,
+          conversation: { participants: { some: { userId: readerId } } },
         },
         data: { isRead: true, readAt: now },
       });

@@ -15,6 +15,7 @@ const now = new Date("2026-09-12T08:00:00.000Z");
 
 function setup() {
   const tx = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: "participant-1" }]),
     message: {
       updateMany: jest.fn().mockResolvedValue({ count: 2 }),
       count: jest.fn().mockResolvedValue(0),
@@ -44,12 +45,17 @@ describe("conversation read-state reconciliation", () => {
     });
 
     expect(run).toHaveBeenCalledTimes(1);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.message.updateMany.mock.invocationCallOrder[0]
+    );
     expect(tx.message.updateMany).toHaveBeenCalledWith({
       where: {
         conversationId: "conv-1",
         senderId: { not: "reader-1" },
         isRead: false,
         deletedAt: null,
+        conversation: { participants: { some: { userId: "reader-1" } } },
       },
       data: { isRead: true, readAt: now },
     });
@@ -81,6 +87,21 @@ describe("conversation read-state reconciliation", () => {
         expiresAt: { gt: now },
       },
     });
+  });
+
+  it("rejects inside the transaction when concurrent membership is no longer present", async () => {
+    const { repo, tx } = setup();
+    tx.$queryRaw.mockResolvedValueOnce([]);
+
+    await expect(repo.reconcileConversationRead("conv-1", "reader-1", now)).rejects.toMatchObject({
+      statusCode: 403,
+      code: "FORBIDDEN",
+    });
+
+    expect(tx.message.updateMany).not.toHaveBeenCalled();
+    expect(tx.notification.updateMany).not.toHaveBeenCalled();
+    expect(tx.message.count).not.toHaveBeenCalled();
+    expect(tx.notification.count).not.toHaveBeenCalled();
   });
 
   it("aggregates unread rows in PostgreSQL while retaining participant ownership", async () => {

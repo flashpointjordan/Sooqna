@@ -154,4 +154,17 @@ describe("conversation read reconciliation JSON fallback", () => {
     });
     expect(files.get("journal")).toEqual([]);
   });
+
+  it("rejects a non-participant inside the shared lock without changing either store", async () => {
+    const beforeMessages = structuredClone(files.get("messages"));
+    const beforeNotifications = structuredClone(files.get("notifications"));
+
+    await expect(
+      new PrismaMessagesRepository().reconcileConversationRead("conv-private", "reader-1", now)
+    ).rejects.toMatchObject({ statusCode: 403, code: "FORBIDDEN" });
+
+    expect(files.get("messages")).toEqual(beforeMessages);
+    expect(files.get("notifications")).toEqual(beforeNotifications);
+    expect(files.get("journal")).toEqual([]);
+  });
 });
