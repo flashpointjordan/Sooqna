@@ -15,6 +15,7 @@ const now = new Date("2026-09-12T08:00:00.000Z");
 
 function setup() {
   const tx = {
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $queryRaw: jest.fn().mockResolvedValue([{ id: "participant-1" }]),
     message: {
       updateMany: jest.fn().mockResolvedValue({ count: 2 }),
@@ -45,6 +46,10 @@ describe("conversation read-state reconciliation", () => {
     });
 
     expect(run).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw.mock.calls[0][0].values).toEqual(["conversation:conv-1"]);
+    expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.$queryRaw.mock.invocationCallOrder[0]
+    );
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
       tx.message.updateMany.mock.invocationCallOrder[0]

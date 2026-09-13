@@ -141,6 +141,37 @@ describe("NotificationsService", () => {
     expect(publishSignal).not.toHaveBeenCalled();
   });
 
+  it("rechecks an existing message notification against authoritative message state", async () => {
+    const repo = new MemoryRepo() as MemoryRepo & {
+      persistMessageProjection: jest.Mock;
+    };
+    repo.rows = [active("existing-message", {
+      type: NotificationType.MESSAGE_RECEIVED,
+      category: NotificationCategory.MESSAGES,
+      dedupeKey: "message:msg-1:user-a",
+      readAt: now,
+    })];
+    repo.persistMessageProjection = jest.fn(async () => ({
+      row: repo.rows[0],
+      changed: false,
+      shouldSignal: false,
+    }));
+    const service = new NotificationsService(repo, { now: () => now });
+
+    await service.persistMessageProjection({
+      eventType: NotificationType.MESSAGE_RECEIVED,
+      recipientId: "user-a",
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      senderId: "sender-1",
+      senderName: "Sender",
+      listingId: "listing-1",
+      messagePreview: "Hello",
+    }, { dedupeKey: "message:msg-1:user-a" });
+
+    expect(repo.persistMessageProjection).toHaveBeenCalledTimes(1);
+  });
+
   it("retains favorite freshness metadata internally but omits it from API DTOs", async () => {
     const repo = new MemoryRepo();
     const service = new NotificationsService(repo, { now: () => now });

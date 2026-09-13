@@ -5,6 +5,8 @@ const mockExecuteRaw = jest.fn();
 const mockNotificationFindFirst = jest.fn();
 const mockNotificationUpdate = jest.fn();
 const mockNotificationCreate = jest.fn();
+const mockNotificationFindUnique = jest.fn();
+const mockMessageFindFirst = jest.fn();
 const mockTransaction = jest.fn();
 const mockOutboxFindUnique = jest.fn(); const mockOutboxCreate = jest.fn(); const mockOutboxUpdate = jest.fn();
 const mockPrisma = {
@@ -32,7 +34,8 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     mockTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
       $executeRaw: mockExecuteRaw,
       notificationPreference: { upsert: mockPreferenceUpsert },
-      notification: { findFirst: mockNotificationFindFirst, update: mockNotificationUpdate, create: mockNotificationCreate },
+      notification: { findFirst: mockNotificationFindFirst, findUnique: mockNotificationFindUnique, update: mockNotificationUpdate, create: mockNotificationCreate },
+      message: { findFirst: mockMessageFindFirst },
       notificationOutbox: { findUnique: mockOutboxFindUnique, create: mockOutboxCreate, update: mockOutboxUpdate },
     }));
   });
@@ -78,6 +81,60 @@ describe("PrismaNotificationsRepository persistence guarantees", () => {
     mockNotificationFindFirst.mockResolvedValue(row); mockOutboxFindUnique.mockResolvedValue({ state });
     await expect(new PrismaNotificationsRepository().persistAggregate({ userId: row.userId, type: row.type, category: row.category, title: row.title, body: row.body, actionUrl: row.actionUrl, entityType: row.entityType, entityId: row.entityId, metadata: row.metadata, dedupeKey: `event-${state}`, aggregationKey: "listing-1:hour", readAt: null, deletedAt: null, expiresAt: row.expiresAt, createdAt: row.createdAt })).resolves.toBeNull();
     expect(mockNotificationCreate).not.toHaveBeenCalled(); expect(mockNotificationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("locks the conversation and persists an already-read message projection without an unread signal", async () => {
+    const projectionAt = new Date("2026-08-24T12:00:00.000Z");
+    const readAt = new Date("2026-08-24T11:59:00.000Z");
+    mockOutboxFindUnique.mockResolvedValue({ state: "PROCESSING", notificationAppliedAt: null });
+    mockNotificationFindUnique.mockResolvedValue(null);
+    mockMessageFindFirst.mockResolvedValue({ id: "msg-1", isRead: true, readAt, deletedAt: null });
+    mockNotificationCreate.mockImplementation(async ({ data }) => ({ id: "notification-message", updatedAt: data.createdAt, ...data }));
+    mockOutboxUpdate.mockResolvedValue({});
+    const repository = new PrismaNotificationsRepository();
+    const input = {
+      userId: "recipient-1",
+      type: NotificationType.MESSAGE_RECEIVED,
+      category: NotificationCategory.MESSAGES,
+      title: "رسالة جديدة",
+      body: "Sender: Hello",
+      actionUrl: "/messages/conv-1",
+      entityType: "conversation",
+      entityId: "conv-1",
+      metadata: { messageId: "msg-1", conversationId: "conv-1" },
+      dedupeKey: "message:msg-1:recipient-1",
+      aggregationKey: null,
+      readAt: null,
+      deletedAt: null,
+      expiresAt: new Date("2026-11-22T12:00:00.000Z"),
+      createdAt: projectionAt,
+    };
+
+    const result = await (repository as any).persistMessageProjection({
+      notification: input,
+      messageId: "msg-1",
+      conversationId: "conv-1",
+      recipientId: "recipient-1",
+    });
+
+    expect(mockExecuteRaw.mock.calls[0][0].values).toEqual(["conversation:conv-1"]);
+    expect(mockExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMessageFindFirst.mock.invocationCallOrder[0]
+    );
+    expect(mockMessageFindFirst.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNotificationCreate.mock.invocationCallOrder[0]
+    );
+    expect(mockMessageFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: "msg-1", conversationId: "conv-1", deletedAt: null }),
+    }));
+    expect(mockNotificationCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ readAt }),
+    }));
+    expect(mockOutboxUpdate).toHaveBeenCalledWith({
+      where: { dedupeKey: "message:msg-1:recipient-1" },
+      data: { notificationAppliedAt: projectionAt },
+    });
+    expect(result).toMatchObject({ changed: true, shouldSignal: false, row: { readAt } });
   });
 
   it("marks an aggregate event applied in the same transaction and skips its retry before outbox processing", async () => {

@@ -18,7 +18,8 @@ export type NotificationOutboxRepository = {
 };
 
 export type NotificationWorkerService = {
-  persistFromEvent?: (type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey: string; aggregationKey?: string }) => Promise<{ row: { id: string; userId: string } | null; changed: boolean }>;
+  persistFromEvent?: (type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey: string; aggregationKey?: string }) => Promise<{ row: { id: string; userId: string } | null; changed: boolean; shouldSignal?: boolean }>;
+  persistMessageProjection?: (payload: Extract<NotificationEventPayload, { eventType: "MESSAGE_RECEIVED" }>, options: { dedupeKey: string }) => Promise<{ row: { id: string; userId: string } | null; changed: boolean; shouldSignal?: boolean }>;
   unreadCount?: (userId: string) => Promise<number>;
   signalPersisted?: (userId: string, notificationId: string, unreadCount?: number) => Promise<void>;
 };
@@ -55,13 +56,15 @@ export function createNotificationWorker(deps: WorkerDeps) {
       throw new AppError(400, "Notification outbox fanout payload is not supported.", "NOTIFICATION_FANOUT_UNSUPPORTED");
     }
     if (!deps.service.persistFromEvent) throw new Error("Notification worker persistence service is not configured.");
-    const result = await deps.service.persistFromEvent(row.eventType, payload, {
-      dedupeKey: row.dedupeKey,
-      ...(isAggregateEvent(row.eventType) ? { aggregationKey: aggregateKey(row) } : {}),
-    });
+    const result = row.eventType === NotificationType.MESSAGE_RECEIVED && payload.eventType === NotificationType.MESSAGE_RECEIVED && deps.service.persistMessageProjection
+      ? await deps.service.persistMessageProjection(payload, { dedupeKey: row.dedupeKey })
+      : await deps.service.persistFromEvent(row.eventType, payload, {
+          dedupeKey: row.dedupeKey,
+          ...(isAggregateEvent(row.eventType) ? { aggregationKey: aggregateKey(row) } : {}),
+        });
     // A non-aggregate row can be retried after persistence succeeded but its
     // signal failed. Re-publishing that id is safe and prevents losing SSE.
-    if (!result.row || (isAggregateEvent(row.eventType) && !result.changed && row.attempts <= 1)) return;
+    if (!result.row || result.shouldSignal === false || (isAggregateEvent(row.eventType) && !result.changed && row.attempts <= 1)) return;
     const unreadCount = deps.service.unreadCount ? await deps.service.unreadCount(result.row.userId) : 0;
     if (deps.publishSignal) await deps.publishSignal(result.row.userId, result.row.id, unreadCount);
     else if (deps.service.signalPersisted) await deps.service.signalPersisted(result.row.userId, result.row.id, unreadCount);

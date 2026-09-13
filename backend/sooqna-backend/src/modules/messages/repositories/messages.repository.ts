@@ -10,6 +10,7 @@ import { PrismaTransactionRunner, type TransactionContext, type TransactionRunne
 import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
 import type { EnqueueNotificationEventInput } from "../../notifications/notifications.producer";
 import { AppError } from "../../../shared/errors/appError";
+import { lockConversationMutation } from "../../../shared/database/conversationMutationLock";
 import {
   commitJsonConversationReadUnlocked,
   messagesStateDataPath,
@@ -405,10 +406,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
     }
 
     return this.transactions.run(async (tx) => {
-      const conversationScope = `conversation:${input.message.conversationId}`;
-      await tx.$executeRaw(
-        Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${conversationScope}, 0))`
-      );
+      await lockConversationMutation(tx, input.message.conversationId);
       const idempotencyScope = [
         input.message.conversationId,
         input.message.senderId,
@@ -627,6 +625,7 @@ export class PrismaMessagesRepository implements MessagesRepository {
       });
     }
     return this.transactions.run(async (tx) => {
+      await lockConversationMutation(tx, conversationId);
       const participant = await tx.$queryRaw<Array<{ id: string }>>(
         Prisma.sql`
           SELECT "id"

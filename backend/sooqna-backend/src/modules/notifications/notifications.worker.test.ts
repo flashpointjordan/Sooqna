@@ -94,6 +94,44 @@ describe("notification outbox worker", () => {
     expect(repo.marks).toEqual([{ id: "outbox-1", state: "PROCESSED" }]);
   });
 
+  test("does not publish a late message event whose authoritative projection is already read", async () => {
+    const repo = new FakeOutboxRepository([event({
+      eventType: NotificationType.MESSAGE_RECEIVED,
+      aggregateType: "message",
+      aggregateId: "msg-1",
+      recipientId: "recipient-1",
+      dedupeKey: "message:msg-1:recipient-1",
+      payload: {
+        eventType: NotificationType.MESSAGE_RECEIVED,
+        recipientId: "recipient-1",
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        senderId: "sender-1",
+        senderName: "Sender",
+        listingId: "listing-1",
+        messagePreview: "Hello",
+      },
+    })]);
+    const notifications = service() as ReturnType<typeof service> & {
+      persistMessageProjection: jest.Mock;
+    };
+    notifications.persistMessageProjection = jest.fn(async () => ({
+      row: { id: "notification-1", userId: "recipient-1" },
+      changed: true,
+      shouldSignal: false,
+    }));
+    const publishSignal = jest.fn();
+    const worker = createNotificationWorker({ repository: repo, service: notifications, now: () => now, publishSignal });
+
+    await worker.runOnce();
+
+    expect(notifications.persistMessageProjection).toHaveBeenCalledTimes(1);
+    expect(notifications.persistFromEvent).not.toHaveBeenCalled();
+    expect(notifications.unreadCount).not.toHaveBeenCalled();
+    expect(publishSignal).not.toHaveBeenCalled();
+    expect(repo.rows[0].state).toBe(NotificationOutboxState.PROCESSED);
+  });
+
   test("backs off a failed event with injected jitter and caps its stored error", async () => {
     const repo = new FakeOutboxRepository([event({ attempts: 4 })]);
     const worker = createNotificationWorker({ repository: repo, service: service(), now: () => now, jitter: () => 77, processEvent: async () => { throw new Error("x".repeat(700)); } });

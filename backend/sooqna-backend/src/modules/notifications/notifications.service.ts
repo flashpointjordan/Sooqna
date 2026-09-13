@@ -1,4 +1,4 @@
-import { NotificationCategory, type NotificationType } from "@prisma/client";
+import { NotificationCategory, NotificationType } from "@prisma/client";
 import { AppError } from "../../shared/errors/appError";
 import { renderNotification } from "./notifications.templates";
 import type { NotificationDto, NotificationEventPayload, NotificationListQuery, NotificationMetadata } from "./notifications.types";
@@ -9,6 +9,17 @@ export type StoredNotification = {
 export type OwnedNotificationMutation = { row: StoredNotification; changed: boolean };
 export type NewNotification = Omit<StoredNotification, "id" | "updatedAt">;
 export type AggregatePersistence = { row: StoredNotification; changed: boolean };
+export type NotificationPersistence = {
+  row: StoredNotification | null;
+  changed: boolean;
+  shouldSignal?: boolean;
+};
+export type MessageProjectionInput = {
+  notification: NewNotification;
+  messageId: string;
+  conversationId: string;
+  recipientId: string;
+};
 export type NotificationsRepository = {
   listActive(userId: string, query: NotificationListQuery, now: Date): Promise<{ items: StoredNotification[]; hasMore: boolean; nextCursor: string | null }>;
   countUnread(userId: string, now: Date): Promise<number>;
@@ -22,6 +33,7 @@ export type NotificationsRepository = {
   findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null>;
   create(input: NewNotification): Promise<StoredNotification>;
   persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence | null>;
+  persistMessageProjection?(input: MessageProjectionInput): Promise<NotificationPersistence>;
   updateAggregate(id: string, input: Partial<Pick<StoredNotification, "title" | "body" | "actionUrl" | "metadata" | "expiresAt" | "updatedAt">>): Promise<StoredNotification>;
 };
 type Options = { now?: () => Date; publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void };
@@ -42,15 +54,34 @@ export class NotificationsService {
   async createFromEvent(type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey?: string; aggregationKey?: string } = {}): Promise<NotificationDto | null> {
     const result = await this.persistFromEvent(type, payload, options);
     if (!result.row) return null;
-    if (result.changed) await this.signal(result.row.userId, result.row.id);
+    if (result.changed && result.shouldSignal !== false) await this.signal(result.row.userId, result.row.id);
     return toDto(result.row);
   }
-  async persistFromEvent(type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey?: string; aggregationKey?: string } = {}): Promise<{ row: StoredNotification | null; changed: boolean }> {
-    if (options.dedupeKey) { const existing = await this.repo.findByDedupeKey(options.dedupeKey); if (existing) return { row: existing, changed: false }; }
+  async persistMessageProjection(
+    payload: Extract<NotificationEventPayload, { eventType: "MESSAGE_RECEIVED" }>,
+    options: { dedupeKey: string }
+  ): Promise<NotificationPersistence> {
+    return this.persistFromEvent(NotificationType.MESSAGE_RECEIVED, payload, options);
+  }
+  async persistFromEvent(type: NotificationType, payload: NotificationEventPayload, options: { dedupeKey?: string; aggregationKey?: string } = {}): Promise<NotificationPersistence> {
     const rendered = renderNotification(type, payload); const preferences = await this.getPreferences(payload.recipientId);
     if (!preferences[rendered.category]) return { row: null, changed: false };
     const createdAt = this.now(); const expiresAt = new Date(createdAt.getTime() + 90 * 24 * 60 * 60 * 1000);
     const input: NewNotification = { userId: payload.recipientId, type, ...rendered, dedupeKey: options.dedupeKey ?? null, aggregationKey: options.aggregationKey ?? null, readAt: null, deletedAt: null, expiresAt, createdAt };
+    if (
+      type === NotificationType.MESSAGE_RECEIVED &&
+      payload.eventType === NotificationType.MESSAGE_RECEIVED &&
+      options.dedupeKey &&
+      this.repo.persistMessageProjection
+    ) {
+      return this.repo.persistMessageProjection({
+        notification: input,
+        messageId: payload.messageId,
+        conversationId: payload.conversationId,
+        recipientId: payload.recipientId,
+      });
+    }
+    if (options.dedupeKey) { const existing = await this.repo.findByDedupeKey(options.dedupeKey); if (existing) return { row: existing, changed: false }; }
     if (options.aggregationKey) {
       const result = await this.repo.persistAggregate({ ...input, aggregationKey: options.aggregationKey });
       if (!result) return { row: null, changed: false };

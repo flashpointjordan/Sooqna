@@ -3,10 +3,11 @@ import { AppError } from "../../shared/errors/appError";
 import { prisma } from "../../config/prisma";
 import { env } from "../../config/env";
 import { decodeNotificationCursor, encodeNotificationCursor, type NotificationListQuery } from "./notifications.types";
-import type { AggregatePersistence, NewNotification, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
+import type { AggregatePersistence, MessageProjectionInput, NewNotification, NotificationPersistence, NotificationsRepository, OwnedNotificationMutation, StoredNotification } from "./notifications.service";
 import type { NotificationOutboxRecord, NotificationOutboxRepository } from "./notifications.worker";
 import { JsonNotificationsRepository } from "./notifications.json.repository";
 import { isStaleAggregate, mergeSavedSearchAggregate } from "./notifications.aggregate";
+import { lockConversationMutation } from "../../shared/database/conversationMutationLock";
 export { JsonNotificationsRepository, type JsonNotificationsStore } from "./notifications.json.repository";
 
 export function createNotificationsRepository(): NotificationsRepository & NotificationOutboxRepository {
@@ -108,6 +109,46 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
   async findByDedupeKey(dedupeKey: string): Promise<StoredNotification | null> { const row = await prisma.notification.findUnique({ where: { dedupeKey } }); return row && toStored(row); }
   async findCurrentAggregate(aggregationKey: string): Promise<StoredNotification | null> { const row = await prisma.notification.findFirst({ where: { aggregationKey, deletedAt: null }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }); return row && toStored(row); }
   async create(input: NewNotification): Promise<StoredNotification> { return toStored(await prisma.notification.create({ data: { ...input, metadata: input.metadata as Prisma.InputJsonValue } })); }
+  async persistMessageProjection(input: MessageProjectionInput): Promise<NotificationPersistence> {
+    const dedupeKey = input.notification.dedupeKey;
+    if (!dedupeKey) throw new AppError(400, "Message notification dedupe key is required.", "VALIDATION_ERROR");
+    return prisma.$transaction(async (tx) => {
+      await lockConversationMutation(tx, input.conversationId);
+      const [ledger, existing, message] = await Promise.all([
+        tx.notificationOutbox.findUnique({ where: { dedupeKey } }),
+        tx.notification.findUnique({ where: { dedupeKey } }),
+        tx.message.findFirst({
+          where: {
+            id: input.messageId,
+            conversationId: input.conversationId,
+            deletedAt: null,
+            conversation: { participants: { some: { userId: input.recipientId } } },
+          },
+          select: { id: true, isRead: true, readAt: true, deletedAt: true },
+        }),
+      ]);
+      if (!ledger) throw new AppError(400, "Notification outbox event was not found.", "NOTIFICATION_EVENT_NOT_FOUND");
+      if (ledger.notificationAppliedAt || ledger.state === NotificationOutboxState.PROCESSED) {
+        const row = existing ? toStored(existing) : null;
+        return { row, changed: false, shouldSignal: Boolean(row && !row.readAt && !row.deletedAt) };
+      }
+      if (ledger.state !== NotificationOutboxState.PENDING && ledger.state !== NotificationOutboxState.PROCESSING) {
+        return { row: null, changed: false, shouldSignal: false };
+      }
+      let row: StoredNotification | null = null;
+      if (message) {
+        const readAt = message.isRead ? (message.readAt ?? input.notification.createdAt) : null;
+        row = toStored(await tx.notification.create({
+          data: { ...input.notification, readAt, metadata: input.notification.metadata as Prisma.InputJsonValue },
+        }));
+      }
+      await tx.notificationOutbox.update({
+        where: { dedupeKey },
+        data: { notificationAppliedAt: input.notification.createdAt },
+      });
+      return { row, changed: Boolean(row), shouldSignal: Boolean(row && !row.readAt) };
+    });
+  }
   async persistAggregate(input: NewNotification & { aggregationKey: string }): Promise<AggregatePersistence | null> {
     return prisma.$transaction(async (tx) => {
       await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.aggregationKey}, 0))`);

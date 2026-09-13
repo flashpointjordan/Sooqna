@@ -9,11 +9,15 @@ import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fil
 import { withMarketplaceJsonLock } from "../../shared/database/marketplaceJsonLock";
 import {
   mutateJsonMessageFallbackState,
+  readJsonMessageFallbackStateUnlocked,
   type JsonMessagesState,
 } from "../messages/repositories/messages.repository";
+import { AppError } from "../../shared/errors/appError";
 import type {
   AggregatePersistence,
+  MessageProjectionInput,
   NewNotification,
+  NotificationPersistence,
   NotificationsRepository,
   OwnedNotificationMutation,
   StoredNotification,
@@ -24,7 +28,11 @@ import type {
   NotificationOutboxRepository,
 } from "./notifications.worker";
 import { isStaleAggregate, mergeSavedSearchAggregate } from "./notifications.aggregate";
-import { recoverJsonConversationReadUnlocked } from "../messages/repositories/conversationReadJsonCoordinator";
+import {
+  commitJsonConversationReadUnlocked,
+  readJsonNotificationStateUnlocked,
+  recoverJsonConversationReadUnlocked,
+} from "../messages/repositories/conversationReadJsonCoordinator";
 
 type JsonNotificationState = {
   notifications: StoredNotification[];
@@ -36,6 +44,9 @@ export interface JsonNotificationsStore {
   mutateMessageState<T>(work: (state: JsonMessagesState) => Promise<T> | T): Promise<T>;
   readNotificationState(): Promise<JsonNotificationState>;
   mutateNotificationState<T>(work: (state: JsonNotificationState) => Promise<T> | T): Promise<T>;
+  mutateMessageAndNotificationState<T>(
+    work: (messageState: JsonMessagesState, notificationState: JsonNotificationState) => Promise<T> | T
+  ): Promise<T>;
 }
 
 const notificationStatePath = path.resolve(
@@ -75,6 +86,17 @@ const fileStore: JsonNotificationsStore = {
     const result = notificationStateQueue.then(lockedRun, lockedRun);
     notificationStateQueue = result.then(() => undefined, () => undefined);
     return result;
+  },
+  mutateMessageAndNotificationState<T>(
+    work: (messageState: JsonMessagesState, notificationState: JsonNotificationState) => Promise<T> | T
+  ) {
+    return withMarketplaceJsonLock(async () => {
+      const messageState = readJsonMessageFallbackStateUnlocked();
+      const notificationState = readJsonNotificationStateUnlocked() as JsonNotificationState;
+      const result = await work(messageState, notificationState);
+      commitJsonConversationReadUnlocked(messageState, notificationState);
+      return result;
+    });
   },
 };
 
@@ -214,6 +236,34 @@ export class JsonNotificationsRepository
   async findByDedupeKey(dedupeKey: string) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.dedupeKey === dedupeKey) ?? null; }
   async findCurrentAggregate(aggregationKey: string) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.aggregationKey === aggregationKey && !row.deletedAt) ?? null; }
   create(input: NewNotification) { return this.store.mutateNotificationState((state) => { const row: StoredNotification = { ...input, id: `ntf_${randomUUID()}`, updatedAt: input.createdAt }; state.notifications.push(row); return row; }); }
+  persistMessageProjection(input: MessageProjectionInput): Promise<NotificationPersistence> {
+    const dedupeKey = input.notification.dedupeKey;
+    if (!dedupeKey) throw new AppError(400, "Message notification dedupe key is required.", "VALIDATION_ERROR");
+    return this.store.mutateMessageAndNotificationState((messageState, notificationState) => {
+      const ledger = messageState.notificationOutbox.find((item) => item.dedupeKey === dedupeKey);
+      if (!ledger) throw new AppError(400, "Notification outbox event was not found.", "NOTIFICATION_EVENT_NOT_FOUND");
+      const existing = notificationState.notifications.find((item) => item.dedupeKey === dedupeKey) ?? null;
+      if (ledger.notificationAppliedAt || ledger.state === NotificationOutboxState.PROCESSED) {
+        return { row: existing, changed: false, shouldSignal: Boolean(existing && !existing.readAt && !existing.deletedAt) };
+      }
+      if (ledger.state !== NotificationOutboxState.PENDING && ledger.state !== NotificationOutboxState.PROCESSING) {
+        return { row: null, changed: false, shouldSignal: false };
+      }
+      const message = messageState.messages.find((item) =>
+        item.id === input.messageId &&
+        item.conversationId === input.conversationId &&
+        item.deletedAt === null
+      );
+      let row: StoredNotification | null = null;
+      if (message) {
+        const readAt = message.isRead ? new Date(message.readAt ?? input.notification.createdAt) : null;
+        row = { ...input.notification, id: `ntf_${randomUUID()}`, readAt, updatedAt: input.notification.createdAt };
+        notificationState.notifications.push(row);
+      }
+      ledger.notificationAppliedAt = input.notification.createdAt.toISOString();
+      return { row, changed: Boolean(row), shouldSignal: Boolean(row && !row.readAt) };
+    });
+  }
   persistAggregate(input: NewNotification & { aggregationKey: string }) { return this.store.mutateNotificationState((state): AggregatePersistence | null => {
     state.appliedAggregateEventKeys ??= [];
     const existing = state.notifications.find((row) => row.userId === input.userId && row.aggregationKey === input.aggregationKey && !row.deletedAt);

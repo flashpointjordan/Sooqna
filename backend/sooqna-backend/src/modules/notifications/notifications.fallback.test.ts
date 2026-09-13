@@ -21,7 +21,12 @@ const now = new Date("2026-08-24T15:43:00.000Z");
 function store(): JsonNotificationsStore & { state: any; notificationState: any; mutationCount: number } {
   const value = {
     state: {
-      conversations: [], messages: [],
+      conversations: [],
+      messages: [{
+        id: "msg-1", conversationId: "conv-1", senderId: "sender-1",
+        clientRequestId: "request-1", type: "text", text: "Hello", attachments: [],
+        isRead: false, readAt: null, createdAt: "2026-08-24T15:42:00.000Z", deletedAt: null,
+      }],
       notificationOutbox: [{
         id: "outbox-1", eventType: NotificationType.MESSAGE_RECEIVED,
         aggregateType: "message", aggregateId: "msg-1", recipientId: "recipient-1",
@@ -38,6 +43,10 @@ function store(): JsonNotificationsStore & { state: any; notificationState: any;
     async mutateNotificationState<T>(work: (state: any) => T | Promise<T>) {
       value.mutationCount += 1;
       return work(value.notificationState);
+    },
+    async mutateMessageAndNotificationState<T>(work: (messageState: any, notificationState: any) => T | Promise<T>) {
+      value.mutationCount += 1;
+      return work(value.state, value.notificationState);
     },
   };
   return value;
@@ -96,6 +105,28 @@ describe("JSON notification fallback delivery", () => {
 
     expect(fallbackStore.notificationState.notifications).toHaveLength(1);
     expect(publishSignal).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists a late message projection as read without creating unread state or a signal", async () => {
+    const fallbackStore = store();
+    fallbackStore.state.messages[0].isRead = true;
+    fallbackStore.state.messages[0].readAt = "2026-08-24T15:42:30.000Z";
+    const repository = new JsonNotificationsRepository(fallbackStore);
+    const publishSignal = jest.fn();
+    const service = new NotificationsService(repository, { now: () => now, publishSignal });
+    const worker = createNotificationWorker({ repository, service, now: () => now, jitter: () => 0 });
+
+    await worker.runOnce();
+
+    expect(fallbackStore.notificationState.notifications).toEqual([
+      expect.objectContaining({
+        dedupeKey: "message:msg-1:recipient-1",
+        readAt: new Date("2026-08-24T15:42:30.000Z"),
+      }),
+    ]);
+    await expect(service.unreadCount("recipient-1")).resolves.toBe(0);
+    expect(publishSignal).not.toHaveBeenCalled();
+    expect(fallbackStore.state.notificationOutbox[0].state).toBe(NotificationOutboxState.PROCESSED);
   });
 
   it("cleans the JSON applied-event ledger when its outbox event reaches a terminal state", async () => {
