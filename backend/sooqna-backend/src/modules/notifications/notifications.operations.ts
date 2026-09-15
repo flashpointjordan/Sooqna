@@ -6,7 +6,7 @@ import {
   NotificationOutboxState,
   NotificationType,
   Prisma,
-  type Role,
+  Role,
 } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { env } from "../../config/env";
@@ -15,12 +15,12 @@ import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fil
 import { withMarketplaceJsonLock } from "../../shared/database/marketplaceJsonLock";
 import {
   readJsonMessageFallbackStateUnlocked,
-  writeJsonMessageFallbackStateUnlocked,
   type JsonMessagesState,
 } from "../messages/repositories/messages.repository";
 import {
   commitJsonConversationReadUnlocked,
   readJsonNotificationStateUnlocked,
+  recoverJsonConversationReadUnlocked,
 } from "../messages/repositories/conversationReadJsonCoordinator";
 
 export type NotificationBroadcastAudienceValue = { roles?: Role[]; userIds?: string[] };
@@ -341,40 +341,112 @@ export class PrismaNotificationOperationsRepository implements NotificationOpera
 }
 
 type JsonBroadcastState = { broadcasts: Array<Omit<StoredNotificationBroadcast, "createdAt" | "updatedAt"> & { createdAt: string; updatedAt: string }> };
-type JsonUser = { uid?: string; firebaseUid?: string; role?: Role; accountStatus?: string };
+type JsonUser = { uid?: string; firebaseUid?: string; role?: unknown; accountStatus?: string };
 const jsonOperationsPath = path.resolve(process.cwd(), "src/modules/notifications/notification-operations.data.json");
 const jsonUsersPath = path.resolve(process.cwd(), "src/modules/users/repositories/users.data.json");
+const jsonMessagesPath = path.resolve(process.cwd(), "src/modules/messages/repositories/messages-state.data.json");
+const jsonBroadcastJournalPath = path.resolve(process.cwd(), "src/modules/notifications/notification-broadcast-journal.data.json");
 
-function readJsonOperations(): JsonBroadcastState {
-  return readJsonArrayFile<JsonBroadcastState>(jsonOperationsPath)[0] ?? { broadcasts: [] };
+export type JsonNotificationOperationsPaths = {
+  operations: string;
+  users: string;
+  messages: string;
+  journal: string;
+};
+
+type JsonBroadcastJournal = { messages: JsonMessagesState; operations: JsonBroadcastState };
+
+export type JsonNotificationOperationsStorage = {
+  recover(): void;
+  readOperations(): JsonBroadcastState;
+  readUsers(): JsonUser[];
+  readMessages(): JsonMessagesState;
+  commitFanout(messages: JsonMessagesState, operations: JsonBroadcastState): void;
+  writeOperations(operations: JsonBroadcastState): void;
+};
+
+export function createJsonNotificationOperationsStorage(options: {
+  paths?: JsonNotificationOperationsPaths;
+  write?: (filePath: string, records: unknown[]) => void;
+} = {}): JsonNotificationOperationsStorage {
+  const paths = options.paths ?? {
+    operations: jsonOperationsPath,
+    users: jsonUsersPath,
+    messages: jsonMessagesPath,
+    journal: jsonBroadcastJournalPath,
+  };
+  const write = options.write ?? ((filePath: string, records: unknown[]) => writeJsonArrayFileAtomically(filePath, records));
+  const recover = (): void => {
+    if (!options.paths) recoverJsonConversationReadUnlocked();
+    const journal = readJsonArrayFile<JsonBroadcastJournal>(paths.journal)[0];
+    if (!journal) return;
+    write(paths.messages, [journal.messages]);
+    write(paths.operations, [journal.operations]);
+    write(paths.journal, []);
+  };
+  return {
+    recover,
+    readOperations() {
+      recover();
+      return readJsonArrayFile<JsonBroadcastState>(paths.operations)[0] ?? { broadcasts: [] };
+    },
+    readUsers() {
+      recover();
+      return readJsonArrayFile<JsonUser>(paths.users);
+    },
+    readMessages() {
+      recover();
+      if (!options.paths) return readJsonMessageFallbackStateUnlocked();
+      return readJsonArrayFile<JsonMessagesState>(paths.messages)[0] ?? { conversations: [], messages: [], notificationOutbox: [] };
+    },
+    commitFanout(messages, operations) {
+      const journal: JsonBroadcastJournal = { messages, operations };
+      write(paths.journal, [journal]);
+      write(paths.messages, [messages]);
+      write(paths.operations, [operations]);
+      write(paths.journal, []);
+    },
+    writeOperations(operations) {
+      write(paths.operations, [operations]);
+    },
+  };
+}
+
+function normalizeJsonRole(value: unknown): Role | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toUpperCase();
+  if (normalized === "USER") return Role.BUYER;
+  return Object.values(Role).includes(normalized as Role) ? normalized as Role : undefined;
 }
 
 export class JsonNotificationOperationsRepository implements NotificationOperationsRepository {
+  constructor(private readonly storage: JsonNotificationOperationsStorage = createJsonNotificationOperationsStorage()) {}
+
   async createBroadcast(input: NotificationBroadcastInput, now: Date) {
     return withMarketplaceJsonLock(() => {
-      const state = readJsonOperations();
+      const state = this.storage.readOperations();
       const row: StoredNotificationBroadcast = { id: `broadcast_${randomUUID()}`, ...input, status: NotificationBroadcastStatus.PENDING, cursor: null, deliveredCount: 0, createdAt: now, updatedAt: now };
       state.broadcasts.push({ ...row, createdAt: now.toISOString(), updatedAt: now.toISOString() });
-      writeJsonArrayFileAtomically(jsonOperationsPath, [state]);
+      this.storage.writeOperations(state);
       return row;
     });
   }
 
   async processBroadcastBatch(limit: number, now: Date) {
     return withMarketplaceJsonLock(() => {
-      const state = readJsonOperations();
+      const state = this.storage.readOperations();
       const stored = state.broadcasts.find((row) => row.status !== NotificationBroadcastStatus.COMPLETED);
       if (!stored) return { broadcastId: null, enqueued: 0, completed: true };
       stored.status = NotificationBroadcastStatus.PROCESSING;
-      const users = readJsonArrayFile<JsonUser>(jsonUsersPath)
-        .map((user) => ({ firebaseUid: user.firebaseUid ?? user.uid ?? "", role: user.role, accountStatus: user.accountStatus ?? "active" }))
+      const users = this.storage.readUsers()
+        .map((user) => ({ firebaseUid: user.firebaseUid ?? user.uid ?? "", role: normalizeJsonRole(user.role), accountStatus: user.accountStatus ?? "active" }))
         .filter((user) => user.firebaseUid && user.accountStatus === "active")
         .filter((user) => !stored.cursor || user.firebaseUid > stored.cursor)
         .filter((user) => stored.audience !== NotificationBroadcastAudience.ROLES || Boolean(user.role && stored.audienceValue?.roles?.includes(user.role)))
         .filter((user) => stored.audience !== NotificationBroadcastAudience.USERS || Boolean(stored.audienceValue?.userIds?.includes(user.firebaseUid)))
         .sort((a, b) => a.firebaseUid.localeCompare(b.firebaseUid));
       const recipients = users.slice(0, limit);
-      const messageState = readJsonMessageFallbackStateUnlocked();
+      const messageState = this.storage.readMessages();
       for (const recipient of recipients) {
         const dedupeKey = `broadcast:${stored.id}:${recipient.firebaseUid}`;
         if (messageState.notificationOutbox.some((row) => row.dedupeKey === dedupeKey)) continue;
@@ -401,14 +473,14 @@ export class JsonNotificationOperationsRepository implements NotificationOperati
       const completed = users.length <= limit;
       stored.status = completed ? NotificationBroadcastStatus.COMPLETED : NotificationBroadcastStatus.PROCESSING;
       stored.updatedAt = now.toISOString();
-      writeJsonMessageFallbackStateUnlocked(messageState);
-      writeJsonArrayFileAtomically(jsonOperationsPath, [state]);
+      this.storage.commitFanout(messageState, state);
       return { broadcastId: stored.id, enqueued: recipients.length, completed };
     });
   }
 
   async cleanupBatch(now: Date, limit: number): Promise<NotificationCleanupResult> {
     return withMarketplaceJsonLock(() => {
+      this.storage.recover();
       const messageState = readJsonMessageFallbackStateUnlocked();
       const notificationState = readJsonNotificationStateUnlocked();
       const result = cleanupJsonNotificationState(messageState, notificationState, now, limit);
@@ -418,7 +490,7 @@ export class JsonNotificationOperationsRepository implements NotificationOperati
   }
 
   async health(now: Date): Promise<NotificationQueueHealth> {
-    const rows = readJsonMessageFallbackStateUnlocked().notificationOutbox;
+    const rows = this.storage.readMessages().notificationOutbox;
     const queuedStates = new Set<string>([NotificationOutboxState.PENDING, NotificationOutboxState.FAILED, NotificationOutboxState.PROCESSING]);
     const queued = rows.filter((row) => queuedStates.has(String(row.state)));
     const oldest = queued.reduce<number | null>((value, row) => {

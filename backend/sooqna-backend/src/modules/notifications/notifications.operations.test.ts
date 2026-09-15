@@ -9,6 +9,7 @@ jest.mock("../../shared/database/marketplaceJsonLock", () => ({ withMarketplaceJ
 jest.mock("../messages/repositories/messages.repository", () => ({ readJsonMessageFallbackStateUnlocked: () => mockCleanupMessageState }));
 jest.mock("../messages/repositories/conversationReadJsonCoordinator", () => ({
   readJsonNotificationStateUnlocked: () => mockCleanupNotificationState,
+  recoverJsonConversationReadUnlocked: jest.fn(),
   commitJsonConversationReadUnlocked: (...args: unknown[]) => mockCommitJsonState(...args),
 }));
 import {

@@ -78,6 +78,50 @@ describe("Prisma notification operations repository", () => {
     }));
   });
 
+  it("writes one bounded recipient event and advances matching cursor and count", async () => {
+    mockTx.notificationBroadcast.findFirst.mockResolvedValue({
+      id: "broadcast-1",
+      audience: NotificationBroadcastAudience.ALL,
+      audienceValue: {},
+      title: "Maintenance",
+      body: "Brief interruption",
+      actionUrl: "/notifications",
+      status: NotificationBroadcastStatus.PENDING,
+      cursor: null,
+      deliveredCount: 0,
+      createdBy: "admin-1",
+      createdAt: now,
+      updatedAt: now,
+    });
+    mockTx.user.findMany.mockResolvedValue([{ firebaseUid: "user-a" }, { firebaseUid: "user-b" }]);
+
+    await expect(new PrismaNotificationOperationsRepository().processBroadcastBatch(1, now)).resolves.toEqual({
+      broadcastId: "broadcast-1",
+      enqueued: 1,
+      completed: false,
+    });
+
+    expect(mockTx.notificationOutbox.upsert).toHaveBeenCalledWith({
+      where: { dedupeKey: "broadcast:broadcast-1:user-a" },
+      create: expect.objectContaining({
+        aggregateId: "broadcast-1",
+        recipientId: "user-a",
+        dedupeKey: "broadcast:broadcast-1:user-a",
+        payload: expect.objectContaining({ recipientId: "user-a", announcementId: "broadcast-1" }),
+      }),
+      update: {},
+    });
+    expect(mockTx.notificationBroadcast.update).toHaveBeenLastCalledWith({
+      where: { id: "broadcast-1" },
+      data: {
+        cursor: "user-a",
+        deliveredCount: { increment: 1 },
+        status: NotificationBroadcastStatus.PROCESSING,
+        updatedAt: now,
+      },
+    });
+  });
+
   it("deletes bounded rows using the documented retention windows", async () => {
     mockTx.notification.findMany.mockResolvedValue([{ id: "notification-1" }]);
     mockTx.notificationOutbox.findMany

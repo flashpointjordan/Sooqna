@@ -25,21 +25,57 @@ import { env } from "../config/env";
 import { readJsonArrayFile } from "../utils/fileStore";
 import { Role } from "@prisma/client";
 import { shouldExposeDeveloperRoutes } from "./securityPolicy";
-import { createNotificationOperationsRepository, getNotificationOperationsWorkerState, NotificationOperationsService } from "../modules/notifications/notifications.operations";
+import {
+  createNotificationOperationsRepository,
+  getNotificationOperationsWorkerState,
+  NotificationOperationsService,
+  type NotificationWorkerState,
+} from "../modules/notifications/notifications.operations";
 import { getNotificationBroker } from "../modules/notifications/notifications.broker";
-import { getNotificationDeliveryWorkerState } from "../modules/notifications/notifications.worker";
+import {
+  getNotificationDeliveryWorkerState,
+  type NotificationDeliveryWorkerState,
+} from "../modules/notifications/notifications.worker";
 
 export const apiRouter = Router();
 const notificationOperations = new NotificationOperationsService(createNotificationOperationsRepository());
 
+function notificationReadiness(
+  deliveryWorkerState: NotificationDeliveryWorkerState,
+  operationsSchedulerState: NotificationWorkerState
+) {
+  const states = [deliveryWorkerState, operationsSchedulerState];
+  if (states.some((state) => state === "error" || state === "stopped")) {
+    return { ready: false, status: "degraded" as const, httpStatus: 503 };
+  }
+  if (states.includes("stopping")) {
+    return { ready: false, status: "stopping" as const, httpStatus: 503 };
+  }
+  if (states.includes("idle")) {
+    return { ready: false, status: "starting" as const, httpStatus: 503 };
+  }
+  return { ready: true, status: "ok" as const, httpStatus: 200 };
+}
+
 apiRouter.get("/health", async (_req, res, next) => {
   try {
+    const workerState = getNotificationDeliveryWorkerState();
+    const operationsSchedulerState = getNotificationOperationsWorkerState();
     const notifications = await notificationOperations.health({
-      workerState: getNotificationDeliveryWorkerState(),
-      operationsSchedulerState: getNotificationOperationsWorkerState(),
+      workerState,
+      operationsSchedulerState,
       activeStreams: getNotificationBroker().activeCount(),
     });
-    res.json({ success: true, data: { status: "ok", uptime: process.uptime(), notifications } });
+    const readiness = notificationReadiness(workerState, operationsSchedulerState);
+    res.status(readiness.httpStatus).json({
+      success: readiness.ready,
+      data: {
+        status: readiness.status,
+        ready: readiness.ready,
+        uptime: process.uptime(),
+        notifications,
+      },
+    });
   } catch (error) {
     next(error);
   }
