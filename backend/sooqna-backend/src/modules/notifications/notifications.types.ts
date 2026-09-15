@@ -126,6 +126,11 @@ export type ManageableNotificationCategory = "MESSAGES" | "LISTINGS" | "ENGAGEME
 
 export type NotificationPreferencesDto = Record<ManageableNotificationCategory, boolean>;
 
+export type NotificationUnreadCountsDto = {
+  total: number;
+  byCategory: Record<NotificationCategory, number>;
+};
+
 function cursorValidationError(): never {
   throw new AppError(400, "Invalid notification cursor", "VALIDATION_ERROR");
 }

@@ -30,6 +30,7 @@ export type AuditAction =
   | "admin.category.update"
   | "admin.city.create"
   | "admin.city.update"
+  | "admin.notification.broadcast"
   | "security.content_blocked";
 
 export interface AuditLogEntry {

@@ -8,10 +8,12 @@ import { NotificationsService } from "./modules/notifications/notifications.serv
 import { createNotificationWorker } from "./modules/notifications/notifications.worker";
 import { runJsonListingLifecycle, runListingLifecycle } from "./modules/notifications/listingNotificationProducers";
 import { createNotificationPublisher, NotificationBroker, setNotificationBroker, setNotificationPublisher } from "./modules/notifications/notifications.broker";
+import { createNotificationOperationsRepository, createNotificationOperationsScheduler, NotificationOperationsService } from "./modules/notifications/notifications.operations";
 
 type LifecycleDependencies = {
   listen?: (port: number, callback: () => void) => Server;
   worker?: ReturnType<typeof createNotificationWorker>;
+  operationsScheduler?: ReturnType<typeof createNotificationOperationsScheduler>;
   disconnect?: () => Promise<void>;
   drainTimeoutMs?: number;
 };
@@ -31,6 +33,10 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
       ? { runLifecycle: async (now: Date) => { await runListingLifecycle(prisma, now); } }
       : { runLifecycle: async (now: Date) => { await runJsonListingLifecycle(now); } }),
   });
+  const operationsScheduler = deps.operationsScheduler ?? createNotificationOperationsScheduler({
+    service: new NotificationOperationsService(createNotificationOperationsRepository()),
+    logger,
+  });
   let server: Server | undefined;
   let stopping: Promise<void> | undefined;
   const drainTimeoutMs = Math.max(1, deps.drainTimeoutMs ?? 10_000);
@@ -40,6 +46,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
       server = (deps.listen ?? ((port, callback) => app.listen(port, callback)))(env.port, () => {
         logger.info(`sooqna-backend listening on http://localhost:${env.port}`, { env: env.nodeEnv, port: env.port });
         worker.start();
+        operationsScheduler.start();
       });
       return server;
     },
@@ -49,7 +56,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
         broker.beginShutdown();
         const closing = server ? new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve())) : Promise.resolve();
         try {
-          const drained = await waitForWorker(worker.stop(), drainTimeoutMs);
+          const drained = await waitForWorker(Promise.all([worker.stop(), operationsScheduler.stop()]).then(() => undefined), drainTimeoutMs);
           if (!drained) logger.warn("Notification worker drain timed out during shutdown.", { drainTimeoutMs });
           await closing;
         } finally {

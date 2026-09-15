@@ -26,6 +26,9 @@ const mockPrisma = {
   notificationOutbox: {
     upsert: jest.fn(),
   },
+  notificationBroadcast: {
+    create: jest.fn(),
+  },
   savedSearch: {
     findMany: jest.fn(),
   },
@@ -75,7 +78,16 @@ jest.mock("../../config/prisma", () => ({
   prisma: mockPrisma,
 }));
 
+jest.mock("../notifications/notifications.operations", () => {
+  const actual = jest.requireActual("../notifications/notifications.operations");
+  return {
+    ...actual,
+    createNotificationOperationsRepository: () => new actual.PrismaNotificationOperationsRepository(),
+  };
+});
+
 import { app } from "../../app";
+import { adminRouter } from "./admin.routes";
 
 function mockUser(role: Role) {
   const user = {
@@ -521,5 +533,41 @@ describe("admin routes", () => {
         }),
       })
     );
+  });
+
+  it("accepts a validated admin notification broadcast and audits no body content", async () => {
+    mockUser(Role.ADMIN);
+    const createdAt = new Date("2026-09-12T10:00:00.000Z");
+    mockPrisma.notificationBroadcast.create.mockResolvedValueOnce({
+      id: "broadcast-1",
+      audience: "ALL",
+      audienceValue: {},
+      title: "Maintenance",
+      body: "Private broadcast copy",
+      actionUrl: "/notifications",
+      status: "PENDING",
+      cursor: null,
+      deliveredCount: 0,
+      createdBy: "admin-uid",
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const response = await request(app)
+      .post("/api/admin/notifications/broadcasts")
+      .set("Authorization", "Bearer admin-token")
+      .send({ audience: "ALL", audienceValue: null, title: "Maintenance", body: "Private broadcast copy", actionUrl: "/notifications" });
+
+    expect(response.status).toBe(202);
+    expect(response.body.data).toEqual({ id: "broadcast-1", status: "PENDING", deliveredCount: 0 });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: "admin.notification.broadcast", targetId: "broadcast-1", metadata: { audience: "ALL" } }),
+    }));
+    expect(JSON.stringify(mockPrisma.auditLog.create.mock.calls)).not.toContain("Private broadcast copy");
+  });
+
+  it("rate limits the admin broadcast endpoint", () => {
+    const layer = adminRouter.stack.find((item) => item.route?.path === "/notifications/broadcasts");
+    expect(layer?.route?.stack).toHaveLength(3);
   });
 });

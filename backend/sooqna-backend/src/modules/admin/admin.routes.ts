@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Router, type NextFunction, type Request, type Response } from "express";
+import rateLimit from "express-rate-limit";
 import { Prisma, Role } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { env } from "../../config/env";
@@ -9,6 +10,9 @@ import { resolveFirebaseAdminCredentialMode } from "../../config/firebaseAdminCr
 import { verifyFirebaseToken } from "../../middleware/verifyFirebaseToken";
 import { requireActiveUser, requireCurrentUser } from "../../middleware/authContext";
 import { checkRole } from "../../middleware/checkRole";
+import { asyncHandler } from "../../middleware/asyncHandler";
+import { validateRequest } from "../../middleware/validateRequest";
+import { createRateLimitHandler } from "../../middleware/rateLimitHandler";
 import { AppError } from "../../shared/errors/appError";
 import { generateId } from "../../utils/ids";
 import { logAuditEvent } from "../audit/audit.service";
@@ -18,6 +22,8 @@ import {
   type ModerationAction,
 } from "../notifications/listingNotificationProducers";
 import { enqueueSavedSearchMatchesForListing } from "../notifications/savedSearchMatcher";
+import { adminNotificationBroadcastBodySchema } from "../notifications/notifications.schemas";
+import { createNotificationOperationsRepository, NotificationOperationsService } from "../notifications/notifications.operations";
 
 type PageParams = {
   limit: number;
@@ -30,6 +36,20 @@ const ACCOUNT_STATUSES = ["active", "suspended", "deleted"] as const;
 const TOP_LISTING_METRICS = ["views", "favorites", "messages"] as const;
 
 export const adminRouter = Router();
+const notificationOperations = new NotificationOperationsService(createNotificationOperationsRepository());
+const notificationBroadcastRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.currentUser?.firebaseUid ?? req.ip ?? "unknown",
+  message: { success: false, code: "RATE_LIMITED", message: "Too many notification broadcasts." },
+  handler: createRateLimitHandler("admin-notification-broadcast", {
+    success: false,
+    code: "RATE_LIMITED",
+    message: "Too many notification broadcasts.",
+  }),
+});
 
 adminRouter.use(verifyFirebaseToken, requireCurrentUser, requireActiveUser, checkRole([Role.ADMIN]));
 
@@ -886,6 +906,16 @@ function moderationHandler(action: ModerationAction) {
     void moderateListing(req, res, action).catch(next);
   };
 }
+
+adminRouter.post(
+  "/notifications/broadcasts",
+  notificationBroadcastRateLimit,
+  validateRequest({ body: adminNotificationBroadcastBodySchema }),
+  asyncHandler(async (req, res) => {
+    const row = await notificationOperations.createBroadcast(actorId(req), req.body);
+    res.status(202).json({ success: true, data: { id: row.id, status: row.status, deliveredCount: row.deliveredCount } });
+  })
+);
 
 adminRouter.post("/listings/:id/publish", moderationHandler("publish"));
 adminRouter.post("/listings/:id/reject", moderationHandler("reject"));

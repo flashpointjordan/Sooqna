@@ -25,11 +25,22 @@ import { env } from "../config/env";
 import { readJsonArrayFile } from "../utils/fileStore";
 import { Role } from "@prisma/client";
 import { shouldExposeDeveloperRoutes } from "./securityPolicy";
+import { createNotificationOperationsRepository, getNotificationOperationsWorkerState, NotificationOperationsService } from "../modules/notifications/notifications.operations";
+import { getNotificationBroker } from "../modules/notifications/notifications.broker";
 
 export const apiRouter = Router();
+const notificationOperations = new NotificationOperationsService(createNotificationOperationsRepository());
 
-apiRouter.get("/health", (_req, res) => {
-  res.json({ success: true, data: { status: "ok", uptime: process.uptime() } });
+apiRouter.get("/health", async (_req, res, next) => {
+  try {
+    const notifications = await notificationOperations.health({
+      workerState: getNotificationOperationsWorkerState(),
+      activeStreams: getNotificationBroker().activeCount(),
+    });
+    res.json({ success: true, data: { status: "ok", uptime: process.uptime(), notifications } });
+  } catch (error) {
+    next(error);
+  }
 });
 
 if (shouldExposeDeveloperRoutes(env.nodeEnv)) {

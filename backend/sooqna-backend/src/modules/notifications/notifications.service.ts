@@ -1,7 +1,7 @@
 import { NotificationCategory, NotificationType } from "@prisma/client";
 import { AppError } from "../../shared/errors/appError";
 import { renderNotification } from "./notifications.templates";
-import type { NotificationDto, NotificationEventPayload, NotificationListQuery, NotificationMetadata } from "./notifications.types";
+import type { NotificationDto, NotificationEventPayload, NotificationListQuery, NotificationMetadata, NotificationUnreadCountsDto } from "./notifications.types";
 
 export type StoredNotification = {
   id: string; userId: string; type: NotificationType; category: NotificationCategory; title: string; body: string; actionUrl: string | null; entityType: string | null; entityId: string | null; metadata: NotificationMetadata; dedupeKey: string | null; aggregationKey: string | null; readAt: Date | null; deletedAt: Date | null; expiresAt: Date; createdAt: Date; updatedAt: Date;
@@ -23,6 +23,7 @@ export type MessageProjectionInput = {
 export type NotificationsRepository = {
   listActive(userId: string, query: NotificationListQuery, now: Date): Promise<{ items: StoredNotification[]; hasMore: boolean; nextCursor: string | null }>;
   countUnread(userId: string, now: Date): Promise<number>;
+  countUnreadByCategory(userId: string, now: Date): Promise<Partial<Record<NotificationCategory, number>>>;
   findActiveOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null>;
   markReadOwned(userId: string, id: string, now: Date): Promise<OwnedNotificationMutation | null>;
   markAllRead(userId: string, now: Date): Promise<number>;
@@ -46,6 +47,11 @@ export class NotificationsService {
   constructor(private readonly repo: NotificationsRepository, options: Options = {}) { this.now = options.now ?? (() => new Date()); this.publishSignal = options.publishSignal ?? (() => undefined); }
   async list(userId: string, query: NotificationListQuery): Promise<{ items: NotificationDto[]; hasMore: boolean; nextCursor: string | null }> { const result = await this.repo.listActive(userId, { ...query, limit: Math.min(query.limit, 50) }, this.now()); return { ...result, items: result.items.map(toDto) }; }
   async unreadCount(userId: string): Promise<number> { return this.repo.countUnread(userId, this.now()); }
+  async unreadCounts(userId: string): Promise<NotificationUnreadCountsDto> {
+    const counts = await this.repo.countUnreadByCategory(userId, this.now());
+    const byCategory = Object.fromEntries(Object.values(NotificationCategory).map((category) => [category, counts[category] ?? 0])) as Record<NotificationCategory, number>;
+    return { total: Object.values(byCategory).reduce((sum, count) => sum + count, 0), byCategory };
+  }
   async markRead(userId: string, id: string): Promise<NotificationDto> { const result = await this.repo.markReadOwned(userId, id, this.now()); if (!result) throw notFound(); if (result.changed) await this.signal(userId, result.row.id); return toDto(result.row); }
   async markAllRead(userId: string): Promise<{ updatedCount: number; unreadCount: number }> { const updatedCount = await this.repo.markAllRead(userId, this.now()); const unreadCount = await this.unreadCount(userId); if (updatedCount > 0) await this.publishSignal(userId, "", unreadCount); return { updatedCount, unreadCount }; }
   async delete(userId: string, id: string): Promise<NotificationDto> { const result = await this.repo.softDeleteOwned(userId, id, this.now()); if (!result) throw notFound(); if (result.changed) await this.signal(userId, result.row.id); return toDto(result.row); }

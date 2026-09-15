@@ -36,6 +36,17 @@ function service() {
 }
 
 describe("notification outbox worker", () => {
+  test("reports bounded operational worker states without exposing event data", async () => {
+    const worker = createNotificationWorker({ repository: new FakeOutboxRepository([]), service: service(), now: () => now });
+    expect(worker.health()).toEqual({ state: "idle" });
+    const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
+    jest.spyOn(global, "setInterval").mockReturnValueOnce(timer);
+    worker.start();
+    expect(worker.health()).toEqual({ state: "running" });
+    await worker.stop();
+    expect(worker.health()).toEqual({ state: "stopped" });
+  });
+
   test("runs listing lifecycle maintenance at most once per UTC hour", async () => {
     const clock = { value: new Date("2026-09-12T08:01:00.000Z") };
     const lifecycle = jest.fn<Promise<void>, [Date]>(async () => undefined);

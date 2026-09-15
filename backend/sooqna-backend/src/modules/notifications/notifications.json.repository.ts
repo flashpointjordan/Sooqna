@@ -227,6 +227,15 @@ export class JsonNotificationsRepository
   }
 
   async countUnread(userId: string, now: Date) { const state = await this.store.readNotificationState(); return state.notifications.filter((row) => row.userId === userId && !row.readAt && !row.deletedAt && row.expiresAt > now).length; }
+  async countUnreadByCategory(userId: string, now: Date) {
+    const state = await this.store.readNotificationState();
+    return state.notifications
+      .filter((row) => row.userId === userId && !row.readAt && !row.deletedAt && row.expiresAt > now)
+      .reduce<Partial<Record<NotificationCategory, number>>>((counts, row) => {
+        counts[row.category] = (counts[row.category] ?? 0) + 1;
+        return counts;
+      }, {});
+  }
   async findActiveOwned(userId: string, id: string, now: Date) { const state = await this.store.readNotificationState(); return state.notifications.find((row) => row.id === id && row.userId === userId && !row.deletedAt && row.expiresAt > now) ?? null; }
   markReadOwned(userId: string, id: string, now: Date) { return this.store.mutateNotificationState((state): OwnedNotificationMutation | null => { const row = state.notifications.find((item) => item.id === id && item.userId === userId && !item.deletedAt && item.expiresAt > now); if (!row) return null; const changed = !row.readAt; if (changed) { row.readAt = now; row.updatedAt = now; } return { row, changed }; }); }
   markAllRead(userId: string, now: Date) { return this.store.mutateNotificationState((state) => { let count = 0; for (const row of state.notifications) if (row.userId === userId && !row.readAt && !row.deletedAt && row.expiresAt > now) { row.readAt = now; row.updatedAt = now; count += 1; } return count; }); }

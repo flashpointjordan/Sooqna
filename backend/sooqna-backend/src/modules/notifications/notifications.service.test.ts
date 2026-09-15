@@ -25,6 +25,14 @@ class MemoryRepo implements NotificationsRepository {
     return { items: page, hasMore: rows.length > page.length, nextCursor: page.length && rows.length > page.length ? encodeNotificationCursor({ createdAt: page.at(-1)!.createdAt.toISOString(), id: page.at(-1)!.id }) : null };
   }
   async countUnread(userId: string, at: Date) { return this.rows.filter((r) => r.userId === userId && !r.deletedAt && r.expiresAt > at && !r.readAt).length; }
+  async countUnreadByCategory(userId: string, at: Date) {
+    return this.rows
+      .filter((r) => r.userId === userId && !r.deletedAt && r.expiresAt > at && !r.readAt)
+      .reduce<Partial<Record<NotificationCategory, number>>>((counts, row) => {
+        counts[row.category] = (counts[row.category] ?? 0) + 1;
+        return counts;
+      }, {});
+  }
   async findActiveOwned(userId: string, id: string, at: Date) { return this.rows.find((r) => r.userId === userId && r.id === id && !r.deletedAt && r.expiresAt > at) ?? null; }
   async markReadOwned(userId: string, id: string, at: Date) { const row = await this.findActiveOwned(userId, id, at); const changed = Boolean(row && !row.readAt); if (row && changed) row.readAt = at; return row ? { row, changed } : null; }
   async markAllRead(userId: string, at: Date) { let count = 0; for (const row of this.rows) if (row.userId === userId && !row.deletedAt && row.expiresAt > at && !row.readAt) { row.readAt = at; count++; } return count; }
@@ -139,6 +147,30 @@ describe("NotificationsService", () => {
     const publishSignal = jest.fn(); const service = new NotificationsService(repo, { now: () => now, publishSignal });
     await service.markRead("user-a", "read"); await service.delete("user-a", "deleted"); await service.markAllRead("user-a");
     expect(publishSignal).not.toHaveBeenCalled();
+  });
+
+  it("returns canonical unread totals for every category using only owned active rows", async () => {
+    const repo = new MemoryRepo();
+    repo.rows = [
+      active("listing"),
+      active("message", { category: NotificationCategory.MESSAGES }),
+      active("other-user", { userId: "user-b", category: NotificationCategory.SECURITY }),
+      active("read", { category: NotificationCategory.SYSTEM, readAt: now }),
+      active("expired", { category: NotificationCategory.ENGAGEMENT, expiresAt: new Date(0) }),
+      active("deleted", { category: NotificationCategory.SAVED_SEARCHES, deletedAt: now }),
+    ];
+
+    await expect(new NotificationsService(repo, { now: () => now }).unreadCounts("user-a")).resolves.toEqual({
+      total: 2,
+      byCategory: {
+        MESSAGES: 1,
+        LISTINGS: 1,
+        ENGAGEMENT: 0,
+        SAVED_SEARCHES: 0,
+        SYSTEM: 0,
+        SECURITY: 0,
+      },
+    });
   });
 
   it("rechecks an existing message notification against authoritative message state", async () => {

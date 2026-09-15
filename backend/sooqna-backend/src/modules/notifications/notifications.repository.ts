@@ -85,6 +85,14 @@ export class PrismaNotificationsRepository implements NotificationsRepository, N
   }
 
   async countUnread(userId: string, now: Date): Promise<number> { return prisma.notification.count({ where: { userId, readAt: null, deletedAt: null, expiresAt: { gt: now } } }); }
+  async countUnreadByCategory(userId: string, now: Date): Promise<Partial<Record<NotificationCategory, number>>> {
+    const rows = await prisma.notification.groupBy({
+      by: ["category"],
+      where: { userId, readAt: null, deletedAt: null, expiresAt: { gt: now } },
+      _count: { _all: true },
+    });
+    return Object.fromEntries(rows.map((row) => [row.category, row._count._all]));
+  }
   async findActiveOwned(userId: string, id: string, now: Date): Promise<StoredNotification | null> { const row = await prisma.notification.findFirst({ where: { id, userId, deletedAt: null, expiresAt: { gt: now } } }); return row && toStored(row); }
   async markReadOwned(userId: string, id: string, now: Date): Promise<OwnedNotificationMutation | null> {
     const changed = await prisma.notification.updateMany({ where: { id, userId, deletedAt: null, expiresAt: { gt: now }, readAt: null }, data: { readAt: now } });

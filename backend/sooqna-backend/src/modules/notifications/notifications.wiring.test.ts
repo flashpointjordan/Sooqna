@@ -3,6 +3,8 @@ import type { Request, Response } from "express";
 
 const mockWorker = { start: jest.fn(), stop: jest.fn(async () => undefined), runOnce: jest.fn(async () => undefined) };
 const mockCreateWorker = jest.fn((_deps: unknown) => mockWorker);
+const mockOperationsScheduler = { start: jest.fn(), stop: jest.fn(async () => undefined), runOnce: jest.fn(async () => undefined), health: jest.fn(() => ({ state: "idle" })) };
+const mockCreateOperationsScheduler = jest.fn(() => mockOperationsScheduler);
 
 jest.mock("../../app", () => ({ app: { listen: jest.fn() } }));
 jest.mock("../../config/env", () => ({ env: { port: 3000 } }));
@@ -10,6 +12,11 @@ jest.mock("../../config/logger", () => ({ logger: { info: jest.fn(), warn: jest.
 jest.mock("../../config/prisma", () => ({ prisma: { $disconnect: jest.fn(async () => undefined) } }));
 jest.mock("./notifications.repository", () => ({ createNotificationsRepository: () => ({}) }));
 jest.mock("./notifications.worker", () => ({ createNotificationWorker: mockCreateWorker }));
+jest.mock("./notifications.operations", () => ({
+  createNotificationOperationsRepository: () => ({}),
+  NotificationOperationsService: jest.fn().mockImplementation(() => ({})),
+  createNotificationOperationsScheduler: mockCreateOperationsScheduler,
+}));
 
 import { getNotificationBroker, getNotificationPublisher } from "./notifications.broker";
 import { createNotificationStreamHandler, createProductionNotificationsService } from "./notifications.controller";
@@ -47,6 +54,7 @@ describe("notification production wiring", () => {
       disconnect: async () => { order.push("disconnect"); },
     });
     lifecycle.start();
+    expect(mockOperationsScheduler.start).toHaveBeenCalledTimes(1);
     const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
     jest.spyOn(global, "setInterval").mockReturnValue(timer); const clear = jest.spyOn(global, "clearInterval").mockImplementation(() => undefined);
     const req = new EventEmitter() as Request; (req as unknown as { currentUser: unknown }).currentUser = { firebaseUid: "user-a" };
@@ -55,6 +63,7 @@ describe("notification production wiring", () => {
     await lifecycle.stop();
 
     expect(stream.end).toHaveBeenCalledTimes(1);
+    expect(mockOperationsScheduler.stop).toHaveBeenCalledTimes(1);
     expect(clear).toHaveBeenCalledTimes(1);
     expect(getNotificationBroker().activeCount()).toBe(0);
     expect(order).toEqual(["server-close", "disconnect"]);

@@ -7,7 +7,7 @@ import { NotificationsService, type NotificationsRepository } from "./notificati
 import { getNotificationBroker, type NotificationPublisher, NotificationBroker, publishNotificationSignal } from "./notifications.broker";
 import { logger } from "../../config/logger";
 
-export type NotificationsControllerService = Pick<NotificationsService, "list" | "unreadCount" | "markRead" | "markAllRead" | "delete" | "getPreferences" | "updatePreferences">;
+export type NotificationsControllerService = Pick<NotificationsService, "list" | "unreadCount" | "unreadCounts" | "markRead" | "markAllRead" | "delete" | "getPreferences" | "updatePreferences">;
 type ProductionServiceOptions = { publisher?: NotificationPublisher; logger?: Pick<typeof logger, "warn"> };
 export function createProductionNotificationsService(repository: NotificationsRepository, options: ProductionServiceOptions = {}): NotificationsService {
   const publisher = options.publisher ?? publishNotificationSignal;
@@ -30,6 +30,7 @@ export function createNotificationsController(service: NotificationsControllerSe
   return {
     async listNotifications(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.list(userId(req), notificationListQuerySchema.parse(req.query))); },
     async getUnreadCount(req: Request, res: Response): Promise<void> { sendSuccess(res, { unreadCount: await service.unreadCount(userId(req)) }); },
+    async getUnreadCounts(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.unreadCounts(userId(req))); },
     async markNotificationRead(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.markRead(userId(req), notificationId(req))); },
     async markAllNotificationsRead(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.markAllRead(userId(req))); },
     async deleteNotification(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.delete(userId(req), notificationId(req))); },
@@ -37,7 +38,7 @@ export function createNotificationsController(service: NotificationsControllerSe
     async updateNotificationPreferences(req: Request, res: Response): Promise<void> { sendSuccess(res, await service.updatePreferences(userId(req), req.body)); },
   };
 }
-export const { listNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead, deleteNotification, getNotificationPreferences, updateNotificationPreferences } = createNotificationsController(service);
+export const { listNotifications, getUnreadCount, getUnreadCounts, markNotificationRead, markAllNotificationsRead, deleteNotification, getNotificationPreferences, updateNotificationPreferences } = createNotificationsController(service);
 
 export function createNotificationStreamHandler(broker: Pick<NotificationBroker, "subscribe" | "activeCount" | "isClosing" | "registerCleanup">) {
   return async (req: Request, res: Response): Promise<void> => {

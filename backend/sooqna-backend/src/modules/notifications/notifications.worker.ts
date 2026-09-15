@@ -48,6 +48,7 @@ export function createNotificationWorker(deps: WorkerDeps) {
   let stopping = false;
   let active: Promise<void> | undefined;
   let lifecycleHour: string | undefined;
+  let state: "idle" | "running" | "stopping" | "stopped" = "idle";
 
   async function process(row: NotificationOutboxRecord): Promise<void> {
     if (deps.processEvent) return deps.processEvent(row);
@@ -112,16 +113,20 @@ export function createNotificationWorker(deps: WorkerDeps) {
     start(): void {
       if (timer) return;
       stopping = false;
+      state = "running";
       scheduleRun();
       timer = setInterval(scheduleRun, intervalMs);
       timer.unref();
     },
     async stop(): Promise<void> {
       stopping = true;
+      state = "stopping";
       if (timer) clearInterval(timer);
       timer = undefined;
       await active;
+      state = "stopped";
     },
+    health: () => ({ state }),
   };
 }
 

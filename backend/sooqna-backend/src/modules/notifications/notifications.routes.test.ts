@@ -32,6 +32,7 @@ import type { NotificationDto } from "./notifications.types";
 const notification = (id: string): NotificationDto => ({ id, type: "LISTING_APPROVED", category: "LISTINGS", title: "title", body: "body", actionUrl: null, entityType: null, entityId: null, metadata: {}, readAt: null, createdAt: "2026-08-24T12:00:00.000Z" });
 const fakeService: NotificationsControllerService = {
   list: async () => ({ items: [], hasMore: false, nextCursor: null }), unreadCount: async () => 3,
+  unreadCounts: async () => ({ total: 3, byCategory: { MESSAGES: 2, LISTINGS: 1, ENGAGEMENT: 0, SAVED_SEARCHES: 0, SYSTEM: 0, SECURITY: 0 } }),
   markRead: async (_userId, id) => { if (id === "other") throw new (require("../../shared/errors/appError").AppError)(404, "Notification not found.", "NOT_FOUND"); return notification(id); },
   markAllRead: async () => ({ updatedCount: 2, unreadCount: 1 }), delete: async (_userId, id) => { if (id === "other") throw new (require("../../shared/errors/appError").AppError)(404, "Notification not found.", "NOT_FOUND"); return notification(id); },
   getPreferences: async () => ({ MESSAGES: true, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true }), updatePreferences: async () => ({ MESSAGES: false, LISTINGS: true, ENGAGEMENT: true, SAVED_SEARCHES: true, SYSTEM: true, SECURITY: true }),
@@ -56,7 +57,7 @@ describe("notification REST route contract", () => {
 
   it("registers fixed routes before parameterized notification IDs", () => {
     const router = createNotificationsRouter(createNotificationsController(fakeService)); const paths = router.stack.map((layer) => layer.route?.path).filter(Boolean);
-    expect(paths).toEqual(["/", "/unread-count", "/stream", "/read-all", "/preferences", "/preferences", "/:notificationId/read", "/:notificationId"]);
+    expect(paths).toEqual(["/", "/unread-count", "/unread-counts", "/stream", "/read-all", "/preferences", "/preferences", "/:notificationId/read", "/:notificationId"]);
     expect(router.stack.slice(0, 4).map((layer) => layer.handle.name)).toEqual(["verifyFirebaseToken", "requireCurrentUser", "requireActiveUser", "requireVerifiedEmail"]);
   });
 
@@ -80,6 +81,7 @@ describe("notification REST route contract", () => {
   it("serves list, count, read-all, and preferences using standard data envelopes", async () => {
     await request(testApp()).get("/api/notifications").set(auth).expect(200, { success: true, data: { items: [], hasMore: false, nextCursor: null } });
     await request(testApp()).get("/api/notifications/unread-count").set(auth).expect(200, { success: true, data: { unreadCount: 3 } });
+    await request(testApp()).get("/api/notifications/unread-counts").set(auth).expect(200, { success: true, data: { total: 3, byCategory: { MESSAGES: 2, LISTINGS: 1, ENGAGEMENT: 0, SAVED_SEARCHES: 0, SYSTEM: 0, SECURITY: 0 } } });
     await request(testApp()).post("/api/notifications/read-all").set(auth).expect(200, { success: true, data: { updatedCount: 2, unreadCount: 1 } });
     await request(testApp()).get("/api/notifications/preferences").set(auth).expect(200).expect((response) => expect(response.body.data.SYSTEM).toBe(true));
     await request(testApp()).put("/api/notifications/preferences").set(auth).send({ MESSAGES: false }).expect(200).expect((response) => expect(response.body.data.MESSAGES).toBe(false));
