@@ -105,10 +105,17 @@ describe("JSON notification operations repository", () => {
     await expect(repository.processBroadcastBatch(10, now)).rejects.toThrow("injected operations write failure");
     expect(readJsonArrayFile(paths.journal)).toHaveLength(1);
 
+    const stateAfterCrash = readJsonArrayFile<any>(paths.messages)[0];
+    stateAfterCrash.notificationOutbox[0].state = "PROCESSING";
+    stateAfterCrash.notificationOutbox[0].attempts = 1;
+    stateAfterCrash.messages.push({ id: "message-created-after-crash" });
+    writeJsonArrayFileAtomically(paths.messages, [stateAfterCrash]);
+
     await expect(repository.processBroadcastBatch(10, now)).resolves.toEqual({ broadcastId: null, enqueued: 0, completed: true });
     expect(messages(paths).notificationOutbox).toEqual([
-      expect.objectContaining({ recipientId: "a", dedupeKey: `broadcast:${broadcast.id}:a` }),
+      expect.objectContaining({ recipientId: "a", dedupeKey: `broadcast:${broadcast.id}:a`, state: "PROCESSING", attempts: 1 }),
     ]);
+    expect(readJsonArrayFile<any>(paths.messages)[0].messages).toContainEqual({ id: "message-created-after-crash" });
     expect(operations(paths).broadcasts[0]).toMatchObject({ status: "COMPLETED", cursor: "a", deliveredCount: 1 });
     expect(readJsonArrayFile(paths.journal)).toEqual([]);
   });

@@ -22,9 +22,9 @@ apps/web/.env.*.local
 # Backend
 backend/sooqna-backend/.env
 backend/sooqna-backend/*.local
+backend/sooqna-backend/.runtime-data/
 backend/sooqna-backend/uploads/listings/*
 backend/sooqna-backend/uploads/profiles/*
-backend/sooqna-backend/src/modules/messages/repositories/conversation-read-journal.data.json
 !backend/sooqna-backend/uploads/listings/.gitkeep
 !backend/sooqna-backend/uploads/profiles/.gitkeep
 

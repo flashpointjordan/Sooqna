@@ -1,4 +1,3 @@
-import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   NotificationOutboxState,
@@ -30,9 +29,10 @@ import type {
 import { isStaleAggregate, mergeSavedSearchAggregate } from "./notifications.aggregate";
 import {
   commitJsonConversationReadUnlocked,
+  notificationStateDataPath,
   readJsonNotificationStateUnlocked,
-  recoverJsonConversationReadUnlocked,
 } from "../messages/repositories/conversationReadJsonCoordinator";
+import { recoverMarketplaceJsonJournalsUnlocked } from "../../shared/database/marketplaceJsonRecovery";
 
 type JsonNotificationState = {
   notifications: StoredNotification[];
@@ -49,10 +49,6 @@ export interface JsonNotificationsStore {
   ): Promise<T>;
 }
 
-const notificationStatePath = path.resolve(
-  process.cwd(),
-  "src/modules/notifications/notifications-state.data.json"
-);
 let notificationStateQueue: Promise<void> = Promise.resolve();
 
 function hydrateNotification(row: StoredNotification): StoredNotification {
@@ -69,17 +65,17 @@ function hydrateNotification(row: StoredNotification): StoredNotification {
 const fileStore: JsonNotificationsStore = {
   mutateMessageState: mutateJsonMessageFallbackState,
   async readNotificationState() {
-    recoverJsonConversationReadUnlocked();
-    const stored = readJsonArrayFile<JsonNotificationState>(notificationStatePath)[0];
+    const stored = readJsonArrayFile<JsonNotificationState>(notificationStateDataPath)[0];
     return stored
       ? { ...stored, notifications: stored.notifications.map(hydrateNotification), appliedAggregateEventKeys: stored.appliedAggregateEventKeys ?? [] }
       : { notifications: [], preferences: [], appliedAggregateEventKeys: [] };
   },
   mutateNotificationState<T>(work: (state: JsonNotificationState) => Promise<T> | T) {
     const run = async () => {
+      recoverMarketplaceJsonJournalsUnlocked();
       const state = await fileStore.readNotificationState();
       const result = await work(state);
-      writeJsonArrayFileAtomically(notificationStatePath, [state]);
+      writeJsonArrayFileAtomically(notificationStateDataPath, [state]);
       return result;
     };
     const lockedRun = () => withMarketplaceJsonLock(run);
@@ -91,6 +87,7 @@ const fileStore: JsonNotificationsStore = {
     work: (messageState: JsonMessagesState, notificationState: JsonNotificationState) => Promise<T> | T
   ) {
     return withMarketplaceJsonLock(async () => {
+      recoverMarketplaceJsonJournalsUnlocked();
       const messageState = readJsonMessageFallbackStateUnlocked();
       const notificationState = readJsonNotificationStateUnlocked() as JsonNotificationState;
       const result = await work(messageState, notificationState);

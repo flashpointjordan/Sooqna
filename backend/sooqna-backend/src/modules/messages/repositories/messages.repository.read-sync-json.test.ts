@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { Conversation, Message } from "../messages.types";
 
 const files = new Map<string, unknown[]>();
@@ -29,6 +30,7 @@ jest.mock("../../../utils/fileStore", () => ({
 }));
 
 import { PrismaMessagesRepository } from "./messages.repository";
+import { messagesStateDataPath, notificationStateDataPath } from "./conversationReadJsonCoordinator";
 
 const now = new Date("2026-09-12T08:00:00.000Z");
 const conversation = (id: string, users: string[]): Conversation => ({
@@ -114,6 +116,12 @@ function seed() {
 
 describe("conversation read reconciliation JSON fallback", () => {
   beforeEach(seed);
+
+  it("keeps generated fallback state outside the tracked source tree", () => {
+    const sourceRoot = `${path.sep}src${path.sep}`;
+    expect(messagesStateDataPath).not.toContain(sourceRoot);
+    expect(notificationStateDataPath).not.toContain(sourceRoot);
+  });
 
   it("updates only the reader and conversation while preserving exact global totals", async () => {
     const result = await new PrismaMessagesRepository().reconcileConversationRead("conv-1", "reader-1", now);

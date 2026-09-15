@@ -329,7 +329,7 @@ describe("notification outbox worker", () => {
     const worker = { start: jest.fn(), stop: jest.fn(() => new Promise<void>(() => { order.push("worker-stop"); })) };
     const server = { close: (callback: (error?: Error) => void) => { order.push("http-close"); callback(); } };
     const lifecycle = createServerLifecycle({ worker: worker as never, listen: ((_port: number, ready: () => void) => { ready(); return server as never; }) as never, disconnect: async () => { order.push("disconnect"); }, drainTimeoutMs: 1 } as never);
-    lifecycle.start();
+    await lifecycle.start();
     const settled = await Promise.race([lifecycle.stop().then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30))]);
     expect(settled).toBe(true);
     expect(order).toEqual(["http-close", "worker-stop", "disconnect"]);

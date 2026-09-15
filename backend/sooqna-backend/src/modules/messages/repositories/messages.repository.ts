@@ -8,6 +8,7 @@ import type { CreateMessageResult } from "../messages.types";
 import { Prisma } from "@prisma/client";
 import { PrismaTransactionRunner, type TransactionContext, type TransactionRunner } from "../../../shared/database/unitOfWork";
 import { withMarketplaceJsonLock } from "../../../shared/database/marketplaceJsonLock";
+import { recoverMarketplaceJsonJournalsUnlocked } from "../../../shared/database/marketplaceJsonRecovery";
 import type { EnqueueNotificationEventInput } from "../../notifications/notifications.producer";
 import { AppError } from "../../../shared/errors/appError";
 import { lockConversationMutation } from "../../../shared/database/conversationMutationLock";
@@ -15,7 +16,6 @@ import {
   commitJsonConversationReadUnlocked,
   messagesStateDataPath,
   readJsonNotificationStateUnlocked,
-  recoverJsonConversationReadUnlocked,
 } from "./conversationReadJsonCoordinator";
 
 type AtomicMessageInput = {
@@ -66,14 +66,16 @@ export type JsonMessagesState = {
 let jsonMessageWriteQueue: Promise<void> = Promise.resolve();
 
 function serializeJsonMessageWrite<T>(work: () => Promise<T>): Promise<T> {
-  const lockedWork = () => withMarketplaceJsonLock(work);
+  const lockedWork = () => withMarketplaceJsonLock(async () => {
+    recoverMarketplaceJsonJournalsUnlocked();
+    return work();
+  });
   const result = jsonMessageWriteQueue.then(lockedWork, lockedWork);
   jsonMessageWriteQueue = result.then(() => undefined, () => undefined);
   return result;
 }
 
 export function readJsonMessageFallbackStateUnlocked(): JsonMessagesState {
-  recoverJsonConversationReadUnlocked();
   const state = readJsonArrayFile<JsonMessagesState>(messagesStateDataPath)[0];
   if (state) return state;
   return {

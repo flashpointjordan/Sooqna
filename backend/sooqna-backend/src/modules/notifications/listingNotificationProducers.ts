@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import * as path from "node:path";
 import { AppError } from "../../shared/errors/appError";
 import { withMarketplaceJsonLock } from "../../shared/database/marketplaceJsonLock";
+import { listingLifecycleJournalPath, recoverMarketplaceJsonJournalsUnlocked } from "../../shared/database/marketplaceJsonRecovery";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fileStore";
 import {
   readJsonMessageFallbackStateUnlocked,
@@ -245,7 +246,6 @@ export function runJsonListingLifecycleState(
 }
 
 const fallbackListingsPath = path.resolve(process.cwd(), "src/modules/listings/repositories/listings.data.json");
-const fallbackLifecycleJournalPath = path.resolve(process.cwd(), "src/modules/notifications/listing-lifecycle.journal.json");
 
 type JsonExpiryTransition = {
   listingId: string;
@@ -272,8 +272,8 @@ const jsonLifecycleFileStorage: JsonLifecycleStorage = {
   writeListings: (listings) => writeJsonArrayFileAtomically(fallbackListingsPath, listings),
   readMessageState: readJsonMessageFallbackStateUnlocked,
   writeMessageState: writeJsonMessageFallbackStateUnlocked,
-  readJournal: () => readJsonArrayFile<JsonLifecycleJournal>(fallbackLifecycleJournalPath)[0] ?? null,
-  writeJournal: (journal) => writeJsonArrayFileAtomically(fallbackLifecycleJournalPath, journal ? [journal] : []),
+  readJournal: () => readJsonArrayFile<JsonLifecycleJournal>(listingLifecycleJournalPath)[0] ?? null,
+  writeJournal: (journal) => writeJsonArrayFileAtomically(listingLifecycleJournalPath, journal ? [journal] : []),
 };
 
 function expiredEvent(transition: JsonExpiryTransition): EnqueueNotificationEventInput {
@@ -326,14 +326,21 @@ async function applyJsonLifecycleJournal(
   return transitioned;
 }
 
+export async function recoverJsonListingLifecycleJournalUnlocked(
+  now = new Date(),
+  storage: JsonLifecycleStorage = jsonLifecycleFileStorage
+): Promise<number> {
+  const pending = storage.readJournal();
+  return pending ? applyJsonLifecycleJournal(pending, now, storage) : 0;
+}
+
 export function runJsonListingLifecycle(
   now = new Date(),
   storage: JsonLifecycleStorage = jsonLifecycleFileStorage
 ): Promise<{ expiring: number; expired: number }> {
   return storage.withLock(async () => {
-    let expired = 0;
-    const pending = storage.readJournal();
-    if (pending) expired += await applyJsonLifecycleJournal(pending, now, storage);
+    recoverMarketplaceJsonJournalsUnlocked();
+    let expired = await recoverJsonListingLifecycleJournalUnlocked(now, storage);
 
     const listings = storage.readListings();
     const transitions = listings.flatMap((listing): JsonExpiryTransition[] => {

@@ -1,6 +1,7 @@
-import { open, readFile, stat, unlink, utimes } from "node:fs/promises";
+import { mkdir, open, readFile, stat, unlink, utimes } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import * as path from "node:path";
 
 type FileLockOptions = {
   retryMs?: number;
@@ -18,6 +19,7 @@ export async function withFileLock<T>(
   const timeoutMs = Math.max(retryMs, options.timeoutMs ?? 5_000);
   const deadline = Date.now() + timeoutMs;
   const token = randomUUID();
+  await mkdir(path.dirname(lockPath), { recursive: true });
 
   while (Date.now() <= deadline) {
     try {

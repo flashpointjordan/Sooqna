@@ -53,7 +53,7 @@ describe("notification production wiring", () => {
       listen: ((_port: number, ready: () => void) => { ready(); return { close: (done: () => void) => { order.push("server-close"); done(); } } as never; }) as never,
       disconnect: async () => { order.push("disconnect"); },
     });
-    lifecycle.start();
+    await lifecycle.start();
     expect(mockOperationsScheduler.start).toHaveBeenCalledTimes(1);
     const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
     jest.spyOn(global, "setInterval").mockReturnValue(timer); const clear = jest.spyOn(global, "clearInterval").mockImplementation(() => undefined);
@@ -67,5 +67,33 @@ describe("notification production wiring", () => {
     expect(clear).toHaveBeenCalledTimes(1);
     expect(getNotificationBroker().activeCount()).toBe(0);
     expect(order).toEqual(["server-close", "disconnect"]);
+  });
+
+  test("recovers fallback journals before listening or starting either worker", async () => {
+    const order: string[] = [];
+    const worker = {
+      start: jest.fn(() => { order.push("delivery-worker"); }),
+      stop: jest.fn(async () => undefined),
+    };
+    const scheduler = {
+      start: jest.fn(() => { order.push("operations-scheduler"); }),
+      stop: jest.fn(async () => undefined),
+    };
+    const lifecycle = createServerLifecycle({
+      worker,
+      operationsScheduler: scheduler,
+      recoverFallbackState: async () => { order.push("recovery"); },
+      listen: ((_port: number, ready: () => void) => {
+        order.push("listen");
+        ready();
+        return { close: (done: () => void) => done() } as never;
+      }) as never,
+      disconnect: async () => undefined,
+    } as never);
+
+    await lifecycle.start();
+
+    expect(order).toEqual(["recovery", "listen", "delivery-worker", "operations-scheduler"]);
+    await lifecycle.stop();
   });
 });

@@ -14,13 +14,21 @@ import { logAuditEvent } from "../audit/audit.service";
 import { readJsonArrayFile, writeJsonArrayFileAtomically } from "../../utils/fileStore";
 import { withMarketplaceJsonLock } from "../../shared/database/marketplaceJsonLock";
 import {
+  commitNotificationBroadcastJournalUnlocked,
+  messagesStateDataPath,
+  notificationBroadcastJournalPath,
+  notificationOperationsDataPath,
+  recoverMarketplaceJsonJournalsUnlocked,
+  recoverNotificationBroadcastJournalUnlocked,
+  type JsonBroadcastFanoutJournal,
+} from "../../shared/database/marketplaceJsonRecovery";
+import {
   readJsonMessageFallbackStateUnlocked,
   type JsonMessagesState,
 } from "../messages/repositories/messages.repository";
 import {
   commitJsonConversationReadUnlocked,
   readJsonNotificationStateUnlocked,
-  recoverJsonConversationReadUnlocked,
 } from "../messages/repositories/conversationReadJsonCoordinator";
 
 export type NotificationBroadcastAudienceValue = { roles?: Role[]; userIds?: string[] };
@@ -342,10 +350,10 @@ export class PrismaNotificationOperationsRepository implements NotificationOpera
 
 type JsonBroadcastState = { broadcasts: Array<Omit<StoredNotificationBroadcast, "createdAt" | "updatedAt"> & { createdAt: string; updatedAt: string }> };
 type JsonUser = { uid?: string; firebaseUid?: string; role?: unknown; accountStatus?: string };
-const jsonOperationsPath = path.resolve(process.cwd(), "src/modules/notifications/notification-operations.data.json");
+const jsonOperationsPath = notificationOperationsDataPath;
 const jsonUsersPath = path.resolve(process.cwd(), "src/modules/users/repositories/users.data.json");
-const jsonMessagesPath = path.resolve(process.cwd(), "src/modules/messages/repositories/messages-state.data.json");
-const jsonBroadcastJournalPath = path.resolve(process.cwd(), "src/modules/notifications/notification-broadcast-journal.data.json");
+const jsonMessagesPath = messagesStateDataPath;
+const jsonBroadcastJournalPath = notificationBroadcastJournalPath;
 
 export type JsonNotificationOperationsPaths = {
   operations: string;
@@ -354,14 +362,12 @@ export type JsonNotificationOperationsPaths = {
   journal: string;
 };
 
-type JsonBroadcastJournal = { messages: JsonMessagesState; operations: JsonBroadcastState };
-
 export type JsonNotificationOperationsStorage = {
   recover(): void;
   readOperations(): JsonBroadcastState;
   readUsers(): JsonUser[];
   readMessages(): JsonMessagesState;
-  commitFanout(messages: JsonMessagesState, operations: JsonBroadcastState): void;
+  commitFanout(journal: JsonBroadcastFanoutJournal): void;
   writeOperations(operations: JsonBroadcastState): void;
 };
 
@@ -377,34 +383,34 @@ export function createJsonNotificationOperationsStorage(options: {
   };
   const write = options.write ?? ((filePath: string, records: unknown[]) => writeJsonArrayFileAtomically(filePath, records));
   const recover = (): void => {
-    if (!options.paths) recoverJsonConversationReadUnlocked();
-    const journal = readJsonArrayFile<JsonBroadcastJournal>(paths.journal)[0];
-    if (!journal) return;
-    write(paths.messages, [journal.messages]);
-    write(paths.operations, [journal.operations]);
-    write(paths.journal, []);
+    if (!options.paths) {
+      recoverMarketplaceJsonJournalsUnlocked();
+      return;
+    }
+    recoverNotificationBroadcastJournalUnlocked({
+      messages: paths.messages,
+      operations: paths.operations,
+      broadcastJournal: paths.journal,
+    }, write);
   };
   return {
     recover,
     readOperations() {
-      recover();
       return readJsonArrayFile<JsonBroadcastState>(paths.operations)[0] ?? { broadcasts: [] };
     },
     readUsers() {
-      recover();
       return readJsonArrayFile<JsonUser>(paths.users);
     },
     readMessages() {
-      recover();
       if (!options.paths) return readJsonMessageFallbackStateUnlocked();
       return readJsonArrayFile<JsonMessagesState>(paths.messages)[0] ?? { conversations: [], messages: [], notificationOutbox: [] };
     },
-    commitFanout(messages, operations) {
-      const journal: JsonBroadcastJournal = { messages, operations };
-      write(paths.journal, [journal]);
-      write(paths.messages, [messages]);
-      write(paths.operations, [operations]);
-      write(paths.journal, []);
+    commitFanout(journal) {
+      commitNotificationBroadcastJournalUnlocked(journal, {
+        messages: paths.messages,
+        operations: paths.operations,
+        broadcastJournal: paths.journal,
+      }, write);
     },
     writeOperations(operations) {
       write(paths.operations, [operations]);
@@ -424,6 +430,7 @@ export class JsonNotificationOperationsRepository implements NotificationOperati
 
   async createBroadcast(input: NotificationBroadcastInput, now: Date) {
     return withMarketplaceJsonLock(() => {
+      this.storage.recover();
       const state = this.storage.readOperations();
       const row: StoredNotificationBroadcast = { id: `broadcast_${randomUUID()}`, ...input, status: NotificationBroadcastStatus.PENDING, cursor: null, deliveredCount: 0, createdAt: now, updatedAt: now };
       state.broadcasts.push({ ...row, createdAt: now.toISOString(), updatedAt: now.toISOString() });
@@ -434,9 +441,13 @@ export class JsonNotificationOperationsRepository implements NotificationOperati
 
   async processBroadcastBatch(limit: number, now: Date) {
     return withMarketplaceJsonLock(() => {
+      this.storage.recover();
       const state = this.storage.readOperations();
       const stored = state.broadcasts.find((row) => row.status !== NotificationBroadcastStatus.COMPLETED);
       if (!stored) return { broadcastId: null, enqueued: 0, completed: true };
+      const baseOperations = structuredClone(state);
+      const expectedCursor = stored.cursor;
+      const expectedDeliveredCount = stored.deliveredCount;
       stored.status = NotificationBroadcastStatus.PROCESSING;
       const users = this.storage.readUsers()
         .map((user) => ({ firebaseUid: user.firebaseUid ?? user.uid ?? "", role: normalizeJsonRole(user.role), accountStatus: user.accountStatus ?? "active" }))
@@ -447,10 +458,12 @@ export class JsonNotificationOperationsRepository implements NotificationOperati
         .sort((a, b) => a.firebaseUid.localeCompare(b.firebaseUid));
       const recipients = users.slice(0, limit);
       const messageState = this.storage.readMessages();
+      const baseMessages = structuredClone(messageState);
+      const outboxEntries: Array<Record<string, unknown>> = [];
       for (const recipient of recipients) {
         const dedupeKey = `broadcast:${stored.id}:${recipient.firebaseUid}`;
         if (messageState.notificationOutbox.some((row) => row.dedupeKey === dedupeKey)) continue;
-        messageState.notificationOutbox.push({
+        const outboxEntry = {
           id: `outbox_${randomUUID()}`,
           eventType: NotificationType.SYSTEM_ANNOUNCEMENT,
           aggregateType: "notification_broadcast",
@@ -466,14 +479,30 @@ export class JsonNotificationOperationsRepository implements NotificationOperati
           lastError: null,
           createdAt: now.toISOString(),
           updatedAt: now.toISOString(),
-        });
+        };
+        messageState.notificationOutbox.push(outboxEntry);
+        outboxEntries.push(outboxEntry);
       }
       stored.cursor = recipients.at(-1)?.firebaseUid ?? stored.cursor;
       stored.deliveredCount += recipients.length;
       const completed = users.length <= limit;
       stored.status = completed ? NotificationBroadcastStatus.COMPLETED : NotificationBroadcastStatus.PROCESSING;
       stored.updatedAt = now.toISOString();
-      this.storage.commitFanout(messageState, state);
+      this.storage.commitFanout({
+        version: 2,
+        baseMessages,
+        baseOperations,
+        outboxEntries,
+        progress: {
+          broadcastId: stored.id,
+          expectedCursor,
+          expectedDeliveredCount,
+          nextCursor: stored.cursor,
+          nextDeliveredCount: stored.deliveredCount,
+          nextStatus: stored.status,
+          updatedAt: stored.updatedAt,
+        },
+      });
       return { broadcastId: stored.id, enqueued: recipients.length, completed };
     });
   }

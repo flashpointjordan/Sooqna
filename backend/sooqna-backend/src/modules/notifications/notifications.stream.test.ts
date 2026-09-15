@@ -137,7 +137,7 @@ describe("notification stream", () => {
     const { createServerLifecycle } = await import("../../server");
     const worker = { start: jest.fn(), stop: jest.fn(async () => undefined) };
     const lifecycle = createServerLifecycle({ worker: worker as never, listen: ((_port: number, ready: () => void) => { ready(); return { close: (done: () => void) => done() } as never; }) as never, disconnect: async () => undefined });
-    lifecycle.start();
+    await lifecycle.start();
     const broker = getNotificationBroker(); const app = express(); app.use("/api/notifications", createNotificationsRouter(undefined, broker));
     let release!: () => void; mockCurrentGate = new Promise<void>((resolve) => { release = resolve; });
     const entered = new Promise<void>((resolve) => { mockCurrentEntered = resolve; });

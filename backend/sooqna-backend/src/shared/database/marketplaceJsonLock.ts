@@ -1,15 +1,12 @@
-import * as path from "node:path";
 import { withFileLock } from "./fileLock";
+import { jsonFallbackRuntimePath } from "./jsonFallbackRuntime";
 
-const marketplaceJsonLockPath = path.resolve(
-  process.cwd(),
-  "src/shared/database/marketplace-json-state.lock"
-);
+const marketplaceJsonLockPath = jsonFallbackRuntimePath("marketplace-json-state.lock");
 
 /**
- * Serializes every JSON-fallback write that can touch listings. Cross-store
- * mutations use this one lock instead of nesting per-file locks, so lock order
- * cannot invert and the listing counter is computed from the same favorite state.
+ * Serializes every JSON-fallback write that can touch shared marketplace state.
+ * Cross-store mutations and journal recovery use this one lock instead of
+ * nesting per-file locks, so recovery cannot race API or worker mutations.
  */
 export function withMarketplaceJsonLock<T>(work: () => Promise<T> | T): Promise<T> {
   return withFileLock(marketplaceJsonLockPath, async () => work());
