@@ -134,7 +134,7 @@ export class NotificationOperationsService {
     return this.repository.cleanupBatch(this.now(), Math.max(1, Math.min(limit, 500)));
   }
 
-  async health(runtime: { workerState: NotificationWorkerState; activeStreams: number }) {
+  async health(runtime: { workerState: NotificationWorkerState; operationsSchedulerState: NotificationWorkerState; activeStreams: number }) {
     return { ...(await this.repository.health(this.now())), ...runtime };
   }
 }

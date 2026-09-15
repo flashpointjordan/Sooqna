@@ -38,6 +38,9 @@ type WorkerDeps = {
 };
 
 const STALE_PROCESSING_MS = 5 * 60_000;
+export type NotificationDeliveryWorkerState = "idle" | "running" | "stopping" | "stopped" | "error";
+let productionNotificationDeliveryWorkerState: NotificationDeliveryWorkerState = "idle";
+export function getNotificationDeliveryWorkerState(): NotificationDeliveryWorkerState { return productionNotificationDeliveryWorkerState; }
 
 export function createNotificationWorker(deps: WorkerDeps) {
   const batchSize = Math.max(1, Math.min(deps.batchSize ?? 50, 200));
@@ -48,7 +51,11 @@ export function createNotificationWorker(deps: WorkerDeps) {
   let stopping = false;
   let active: Promise<void> | undefined;
   let lifecycleHour: string | undefined;
-  let state: "idle" | "running" | "stopping" | "stopped" = "idle";
+  let state: NotificationDeliveryWorkerState = "idle";
+  const setState = (next: NotificationDeliveryWorkerState): void => {
+    state = next;
+    productionNotificationDeliveryWorkerState = next;
+  };
 
   async function process(row: NotificationOutboxRecord): Promise<void> {
     if (deps.processEvent) return deps.processEvent(row);
@@ -105,26 +112,35 @@ export function createNotificationWorker(deps: WorkerDeps) {
   const runOnce = async (): Promise<void> => {
     if (stopping) return;
     if (active) return active;
+    setState("running");
     active = execute();
-    try { await active; } finally { active = undefined; }
+    try {
+      await active;
+      if (!timer && !stopping) setState("idle");
+    } catch (error) {
+      setState("error");
+      throw error;
+    } finally {
+      active = undefined;
+    }
   };
   return {
     runOnce,
     start(): void {
       if (timer) return;
       stopping = false;
-      state = "running";
+      setState("running");
       scheduleRun();
       timer = setInterval(scheduleRun, intervalMs);
       timer.unref();
     },
     async stop(): Promise<void> {
       stopping = true;
-      state = "stopping";
+      setState("stopping");
       if (timer) clearInterval(timer);
       timer = undefined;
       await active;
-      state = "stopped";
+      setState("stopped");
     },
     health: () => ({ state }),
   };

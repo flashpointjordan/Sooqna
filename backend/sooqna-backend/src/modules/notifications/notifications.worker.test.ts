@@ -1,6 +1,6 @@
 import { NotificationOutboxState, NotificationType } from "@prisma/client";
 import { enqueueNotificationEvent } from "./notifications.producer";
-import { createNotificationWorker, runNotificationWorkerOnce, type NotificationOutboxRecord, type NotificationOutboxRepository } from "./notifications.worker";
+import { createNotificationWorker, getNotificationDeliveryWorkerState, runNotificationWorkerOnce, type NotificationOutboxRecord, type NotificationOutboxRepository } from "./notifications.worker";
 
 const now = new Date("2026-08-24T10:00:00.000Z");
 
@@ -43,8 +43,10 @@ describe("notification outbox worker", () => {
     jest.spyOn(global, "setInterval").mockReturnValueOnce(timer);
     worker.start();
     expect(worker.health()).toEqual({ state: "running" });
+    expect(getNotificationDeliveryWorkerState()).toBe("running");
     await worker.stop();
     expect(worker.health()).toEqual({ state: "stopped" });
+    expect(getNotificationDeliveryWorkerState()).toBe("stopped");
   });
 
   test("runs listing lifecycle maintenance at most once per UTC hour", async () => {

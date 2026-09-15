@@ -4,8 +4,11 @@ jest.mock("../modules/notifications/notifications.operations", () => ({
   createNotificationOperationsRepository: () => ({}),
   getNotificationOperationsWorkerState: () => "running",
   NotificationOperationsService: jest.fn().mockImplementation(() => ({
-    health: async () => ({ queueDepth: 2, oldestPendingAgeMs: 5_000, deadCount: 1, workerState: "running", activeStreams: 0 }),
+    health: async (runtime: Record<string, unknown>) => ({ queueDepth: 2, oldestPendingAgeMs: 5_000, deadCount: 1, ...runtime }),
   })),
+}));
+jest.mock("../modules/notifications/notifications.worker", () => ({
+  getNotificationDeliveryWorkerState: () => "stopped",
 }));
 
 import { app } from "../app";
@@ -20,7 +23,8 @@ describe("GET /api/health", () => {
     expect(response.body.data.notifications).toEqual(expect.objectContaining({
       queueDepth: expect.any(Number),
       deadCount: expect.any(Number),
-      workerState: expect.any(String),
+      workerState: "stopped",
+      operationsSchedulerState: "running",
       activeStreams: expect.any(Number),
     }));
     expect(JSON.stringify(response.body.data.notifications)).not.toMatch(/userId|recipientId|title|body|payload/i);

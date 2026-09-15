@@ -143,11 +143,12 @@ describe("notification operational service", () => {
   it("returns aggregate privacy-safe operational health only", async () => {
     const repo = new MemoryOperationsRepository();
     const service = new NotificationOperationsService(repo, { now: () => new Date(now.getTime() + 5_000) });
-    expect(await service.health({ workerState: "running", activeStreams: 7 })).toEqual({
+    expect(await service.health({ workerState: "stopped", operationsSchedulerState: "running", activeStreams: 7 })).toEqual({
       queueDepth: 2,
       oldestPendingAgeMs: 5_000,
       deadCount: 1,
-      workerState: "running",
+      workerState: "stopped",
+      operationsSchedulerState: "running",
       activeStreams: 7,
     });
   });

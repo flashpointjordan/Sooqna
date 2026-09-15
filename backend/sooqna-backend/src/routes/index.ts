@@ -27,6 +27,7 @@ import { Role } from "@prisma/client";
 import { shouldExposeDeveloperRoutes } from "./securityPolicy";
 import { createNotificationOperationsRepository, getNotificationOperationsWorkerState, NotificationOperationsService } from "../modules/notifications/notifications.operations";
 import { getNotificationBroker } from "../modules/notifications/notifications.broker";
+import { getNotificationDeliveryWorkerState } from "../modules/notifications/notifications.worker";
 
 export const apiRouter = Router();
 const notificationOperations = new NotificationOperationsService(createNotificationOperationsRepository());
@@ -34,7 +35,8 @@ const notificationOperations = new NotificationOperationsService(createNotificat
 apiRouter.get("/health", async (_req, res, next) => {
   try {
     const notifications = await notificationOperations.health({
-      workerState: getNotificationOperationsWorkerState(),
+      workerState: getNotificationDeliveryWorkerState(),
+      operationsSchedulerState: getNotificationOperationsWorkerState(),
       activeStreams: getNotificationBroker().activeCount(),
     });
     res.json({ success: true, data: { status: "ok", uptime: process.uptime(), notifications } });
