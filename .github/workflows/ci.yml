@@ -45,12 +45,11 @@ jobs:
 
       - name: Test
         env:
-          # Tests mock Prisma (or are pure) and never hit a live DB, but env.ts
-          # loads at import time and requires DATABASE_URL unless fallback mode is
-          # on. Provide DB-less test env so config validation passes in CI.
+          # Keep tests in JSON fallback mode. Leaving DATABASE_URL unset is
+          # intentional: if a test boots the notification scheduler, it must not
+          # construct the Prisma-backed operations repository and try localhost.
           NODE_ENV: test
           ENABLE_CATEGORIES_JSON_FALLBACK: "true"
-          DATABASE_URL: postgresql://test:test@127.0.0.1:5432/test?schema=public
         run: npm test -- --runInBand
 
       - name: Build
