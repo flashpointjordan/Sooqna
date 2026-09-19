@@ -100,6 +100,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
           BACKEND_DATABASE_URL: ${{ secrets.BACKEND_DATABASE_URL }}
           BACKEND_FIREBASE_PROJECT_ID: ${{ secrets.BACKEND_FIREBASE_PROJECT_ID }}
           BACKEND_FIREBASE_CLIENT_EMAIL: ${{ secrets.BACKEND_FIREBASE_CLIENT_EMAIL }}
@@ -125,7 +126,7 @@ jobs:
           # Let the shell script control failures (set -e / explicit exits).
           # `script_stop: true` can prematurely stop on valid test commands that return 1.
           script_stop: false
-          envs: DEPLOY_APP_DIR,BACKEND_DATABASE_URL,BACKEND_FIREBASE_PROJECT_ID,BACKEND_FIREBASE_CLIENT_EMAIL,BACKEND_FIREBASE_PRIVATE_KEY,BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH,BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS,NEXT_PUBLIC_BACKEND_API_BASE_URL,NEXT_PUBLIC_UPLOADS_PUBLIC_BASE_URL,NEXT_PUBLIC_SITE_URL,NEXT_PUBLIC_FIREBASE_API_KEY,NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,NEXT_PUBLIC_FIREBASE_PROJECT_ID,NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,NEXT_PUBLIC_FIREBASE_APP_ID,NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,RESEND_API_KEY,ADMIN_EMAILS
+          envs: DEPLOY_APP_DIR,DEPLOY_SHA,BACKEND_DATABASE_URL,BACKEND_FIREBASE_PROJECT_ID,BACKEND_FIREBASE_CLIENT_EMAIL,BACKEND_FIREBASE_PRIVATE_KEY,BACKEND_FIREBASE_SERVICE_ACCOUNT_PATH,BACKEND_FIREBASE_USE_APPLICATION_DEFAULT_CREDENTIALS,NEXT_PUBLIC_BACKEND_API_BASE_URL,NEXT_PUBLIC_UPLOADS_PUBLIC_BASE_URL,NEXT_PUBLIC_SITE_URL,NEXT_PUBLIC_FIREBASE_API_KEY,NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,NEXT_PUBLIC_FIREBASE_PROJECT_ID,NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,NEXT_PUBLIC_FIREBASE_APP_ID,NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,RESEND_API_KEY,ADMIN_EMAILS
           script: |
             set -Eeo pipefail
 
@@ -134,11 +135,14 @@ jobs:
             cd "$DEPLOY_APP_DIR"
             git config --global --add safe.directory "$DEPLOY_APP_DIR"
 
-            if ! git remote get-url origin >/dev/null 2>&1; then
-              echo "Missing git remote 'origin' in $DEPLOY_APP_DIR"
-              echo "Set it once on server: git remote add origin git@github.com:devsooqna-arch/Sooqna.git"
-              exit 1
+            CANONICAL_REPO="https://github.com/flashpointjordan/Sooqna.git"
+            if git remote get-url origin >/dev/null 2>&1; then
+              git remote set-url origin "$CANONICAL_REPO"
+            else
+              git remote add origin "$CANONICAL_REPO"
             fi
+            echo "Deploy source: $CANONICAL_REPO"
+            echo "Deploy SHA: $DEPLOY_SHA"
 
             git clean -fd \
               -e backend/sooqna-backend/uploads/ \
@@ -147,9 +151,9 @@ jobs:
             rm -f backend/sooqna-backend/uploads/listings/.gitkeep
             rm -f backend/sooqna-backend/uploads/profiles/.gitkeep
 
-            git fetch origin
-            git checkout -B main origin/main
-            git reset --hard origin/main
+            git fetch --prune origin main
+            git checkout -B main "$DEPLOY_SHA"
+            git reset --hard "$DEPLOY_SHA"
 
             # =========================
             # Backend deployment
