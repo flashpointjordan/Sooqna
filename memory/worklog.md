@@ -2,12 +2,6 @@
 
 Chronological log of significant changes (newest first). Keep entries short; link commits/files.
 
-## 2026-09-11 — Main consolidation baseline
-- Imported the audited trusted-proxy patch and the 24-commit notification foundation onto `main`.
-- Added the corrected producer contract test. The backend foundation is present, while five
-  producer/transaction assertions remain intentionally failing; frontend work is not implemented.
-- Added the approved consolidation design/plan and accuracy-reviewed project references.
-
 ## 2026-06-14 — Arabic-aware listing search
 - Search was a literal substring match; Arabic queries missed equivalent letter forms
   (e.g. "ايفون" didn't match "آيفون").

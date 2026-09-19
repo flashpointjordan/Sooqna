@@ -136,8 +136,6 @@ Whenever the domain mutation already uses or can safely adopt a Prisma transacti
 
 Where legacy module boundaries cannot yet share a transaction, the module performs an idempotent outbox upsert immediately after the successful business operation. Failure does not roll back an already successful user action, but it produces a structured error with event type, aggregate ID, recipient ID, and outcome and is covered by an integration test.
 
-Favorite creation is serialized per listing so the durable favorite cycle identity, monotonic `sourceVersion`, and `favoriteCount` snapshot describe the same mutation. Its dedupe key is `favorite:<listingId>:<actorId>:<sourceId>`, where `sourceId` identifies one persisted add cycle. A retry of the same active add is idempotent and produces no event; add -> remove -> add persists a new `sourceId` and is therefore a new deliverable event. `sourceVersion`, `sourceId`, and `sourceTimestamp` remain internal notification facts used to reject stale aggregate delivery; public notification DTOs expose the useful `listingId` and `favoriteCount` but filter those ordering fields.
-
 ### Message event flow
 
 ```text
@@ -171,7 +169,7 @@ The current global `Message.isRead` representation is acceptable only while conv
 
 ### Worker and delivery guarantees
 
-The worker retains atomic batch claiming, retry with exponential backoff and jitter, a maximum of eight attempts, `DEAD` state diagnostics, restart recovery, and bounded graceful shutdown. Dedupe keys guarantee at-most-one visible result per logical direct event. Favorite and saved-search aggregates update a current bucket rather than generating notification floods. Favorite aggregation compares the monotonic internal `sourceVersion` rather than wall-clock time, so delayed older events cannot overwrite the count snapshot from a newer favorite cycle, including when timestamps are equal.
+The worker retains atomic batch claiming, retry with exponential backoff and jitter, a maximum of eight attempts, `DEAD` state diagnostics, restart recovery, and bounded graceful shutdown. Dedupe keys guarantee at-most-one visible result per logical direct event. Favorite and saved-search aggregates update a current bucket rather than generating notification floods.
 
 The worker is started only by the production server process, not by tests, migrations, one-off scripts, or Prisma generation.
 

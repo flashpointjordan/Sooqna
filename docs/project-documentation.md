@@ -1,6 +1,6 @@
 # Sooqna Project Documentation
 
-Last updated: 2026-09-11
+Last updated: 2026-07-09
 
 ## 1. Overview
 
@@ -92,7 +92,7 @@ Use this split as follows:
 - Shared API contracts live under `src/shared/contracts`.
 - Cross-cutting middleware lives under `src/middleware`.
 
-The API root is assembled in `src/routes/index.ts`. Main modules include auth, users, listings, uploads, favorites, messages, notifications, categories, cities, engagement, reports, reviews, audit, admin, contact, market, and saved searches.
+The API root is assembled in `src/routes/index.ts`. Main modules include auth, users, listings, uploads, favorites, messages, categories, cities, engagement, reports, reviews, audit, admin, contact, market, and saved searches.
 
 ## 6. Data Model
 
@@ -110,7 +110,6 @@ Core models:
 - `Conversation`, `ConversationParticipant`, `Message` - listing-scoped messaging.
 - `Category` and `City` - marketplace taxonomy and locations.
 - `Report`, `AuditLog`, `Review`, `SavedSearch`, `EngagementEvent` - moderation, trust, personalization, and analytics.
-- `Notification`, `NotificationPreference`, `NotificationOutbox`, `NotificationBroadcast` - durable in-app notification state, preferences, event processing, and administrative fan-out state.
 
 Firebase Auth is not the business database. It provides identity tokens that the backend verifies before reading or mutating protected resources.
 
@@ -156,8 +155,6 @@ The UI is Arabic/RTL-oriented. Keep user-facing Arabic strings clear, direct, an
 - Submit contact requests through the contact form.
 
 Listings are moderated: newly published listings are pending until approved by an admin.
-
-The backend notification foundation provides authenticated REST endpoints, an outbox worker, templates, preferences, and an authenticated SSE change-signal stream. Business-event producers and the notification frontend are not complete yet; the preserved producer suite documents those gaps.
 
 ## 10. Admin And Moderation
 
@@ -210,13 +207,12 @@ Production deploy over SSH:
 8. Runs `prisma migrate deploy`.
 9. Runs `db:check`.
 10. Seeds categories from JSON.
-11. Runs the Arabic `searchText` backfill as a best-effort, non-fatal step.
-12. Restarts backend with PM2; the production server starts the notification worker.
-13. Writes web `.env.local`.
-14. Installs web dependencies.
-15. Builds web.
-16. Restarts web with PM2.
-17. Runs backend health check.
+11. Restarts backend with PM2.
+12. Writes web `.env.local`.
+13. Installs web dependencies.
+14. Builds web.
+15. Restarts web with PM2.
+16. Runs backend health check.
 
 ## 13. Testing And Quality Commands
 
@@ -266,7 +262,6 @@ npm run assert:branding
 - Keep upload validation strict.
 - Keep admin routes behind role checks.
 - Keep rate limits and error handling enabled.
-- Keep notification ownership predicates scoped to the authenticated user, and keep SSE signals free of notification content.
 - Avoid exposing developer routes in production.
 
 ## 15. Repository Cleanliness Rules

@@ -105,30 +105,3 @@ Exact result: exit code `1`; `10` suites total (`9` passed, `1` failed); `88` te
 Accuracy review is required because the preserved documentation reflects an earlier repository state. In particular, its search/backfill notes conflict with the preserved cleanup decision to remove the invalid backfill script, so those statements must be checked against the integration tree before acceptance.
 
 No branch was deleted, no worktree was removed, and no remote ref or tag was pushed during this preservation task.
-
-## Main integration and documentation accuracy review
-
-Integration started from `main`/`origin/main` at `f1726c65afe07f7f019b3c79ae13cc98ab4c64da` in `.worktrees/main-notifications`.
-
-- The audited proxy commit `4c75e6f7895b6f7870b17b80143537ee04471e65` was applied first. Its one `env.ts` conflict was resolved by retaining current-main CORS normalization and `ADMIN_EMAILS` handling alongside the audited proxy parser and production validation. The result was empty because current `main` already contained the audited file changes; it was recorded explicitly as `eccab7f8ab38ee0a97b73ecee3ab437bf7f52ccb`. `TRUST_PROXY=1` remains in `.github/workflows/deploy.yml`, the proxy tests are present, and `.github/workflows/deploy-softshop.yml` is absent.
-- The exact 24-commit notification range `be558128^..6febfba` applied in order without conflicts.
-- Corrected producer test `76617431d0d8194f122dc452d021ba061dea02c8` applied after the foundation as `53f1196`.
-- The approved September 11 design and plan were restored by exact path and committed alone as `a68f624` (`docs: add main consolidation plan`).
-
-The remaining paths from preservation commit `b1467b3` were reviewed against the integrated tree:
-
-| Path | Decision | Accuracy review |
-| --- | --- | --- |
-| `CLAUDE.md` | ACCEPT | Architecture, runtime rules, and main-only deployment guidance match the integrated tree. |
-| `README.md` | ACCEPT | Commands and project entry points remain current. |
-| `docs/README.md` | ACCEPT | The documentation map and maintenance rules remain useful. |
-| `docs/project-documentation.md` | CORRECT | Imported, dated 2026-09-11, and updated for notification models/routes/worker/SSE, incomplete producers/frontend, the actual search backfill deploy step, and notification privacy. |
-| `docs/superpowers/plans/2026-05-28-admin-product-analytics-enhancements.md` | ACCEPT DELETION | The old implementation plan is stale and is removed from the maintained documentation tree. |
-| `docs/superpowers/plans/2026-07-09-conservative-project-cleanup.md` | REJECT | It incorrectly says the current schema lacks `Listing.searchText` and directs deletion of a valid backfill script. |
-| `docs/superpowers/specs/2026-07-09-conservative-project-cleanup-design.md` | REJECT | Its search/backfill premises contradict current `main`; it was not imported. |
-| `memory/README.md` | ACCEPT | The memory purpose and maintenance guidance are accurate. |
-| `memory/decisions.md` | ACCEPT | Identity, moderation, CORS, and stored Arabic-search decisions match the code. |
-| `memory/known-issues.md` | CORRECT | Existing facts were retained and the five intentional producer gaps plus absent frontend were recorded. |
-| `memory/worklog.md` | CORRECT | Historical entries were retained and the 2026-09-11 integration baseline was added. |
-
-Current-main evidence for rejecting the cleanup plan/spec: `Listing.searchText` exists in `prisma/schema.prisma`; `src/shared/utils/arabic.ts` and `scripts/backfill-search-text.ts` exist; `package.json` defines `backfill:search`; and `.github/workflows/deploy.yml` runs it as a best-effort, non-fatal post-migration step.

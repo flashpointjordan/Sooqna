@@ -304,7 +304,7 @@ Run message identity, producer, repository, service, and typecheck suites. Expec
 
 - [ ] **Step 1: Correct favorite creation semantics**
 
-Repository upsert returns the atomic mutation result `{ created, favoriteCount, sourceId?, sourceTimestamp?, sourceVersion? }`. Notify only for a newly created favorite, never removal, duplicate add, missing owner, or self-favorite. A duplicate retry while the favorite remains active is idempotent. After remove, a later add persists a new durable cycle `sourceId`, so add -> remove -> add produces two independently deliverable events without weakening retry dedupe.
+Repository upsert returns `{ created: boolean }`. Notify only for a newly created favorite, never removal, duplicate add, missing owner, or self-favorite.
 
 Event facts:
 
@@ -313,7 +313,7 @@ Event facts:
   aggregateType: "listing",
   aggregateId: listing.id,
   recipientId: listing.ownerId,
-  dedupeKey: "favorite:<listingId>:<actorId>:<sourceId>",
+  dedupeKey: "favorite:<listingId>:<actorId>",
   aggregationKey: "listing-favorite:<listingId>:<UTC-hour>",
   payload: {
     eventType: "LISTING_FAVORITED_AGGREGATE",
@@ -321,14 +321,9 @@ Event facts:
     listingId: listing.id,
     listingTitle: listing.title,
     favoriteCount,
-    sourceId,
-    sourceTimestamp,
-    sourceVersion,
   },
 }
 ```
-
-The repository serializes favorite mutations per listing and captures `favoriteCount` with the durable monotonic `sourceVersion`. The worker uses that internal version to reject delayed stale aggregate events even when timestamps are equal. `sourceId`, `sourceTimestamp`, and `sourceVersion` are persisted for dedupe/freshness only and are filtered from public `NotificationDto.metadata`.
 
 - [ ] **Step 2: Produce review events**
 
@@ -336,7 +331,7 @@ After review persistence and seller-stat recalculation, resolve authoritative re
 
 - [ ] **Step 3: Preserve successful legacy writes when post-commit enqueue fails**
 
-Where a transaction cannot yet be shared, log only event type, aggregate ID (`listingId` or `reviewId`), recipient ID, and outcome; never content or credentials, and keep the successful business response.
+Where a transaction cannot yet be shared, log a structured enqueue failure without content or credentials and keep the successful business response.
 
 - [ ] **Step 4: Verify and commit**
 

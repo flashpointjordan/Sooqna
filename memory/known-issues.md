@@ -2,13 +2,6 @@
 
 Check here before debugging "weird" behavior. Newest/most-important first.
 
-## Notification producers and frontend are not complete
-- The durable notification schema, REST API, preferences, outbox worker, and authenticated SSE
-  signal stream are present.
-- Message, favorite, and review business flows do not yet enqueue the expected outbox events,
-  and no notification frontend has been implemented. The focused producer suite intentionally
-  contains five failing assertions that define this remaining work.
-
 ## Generic errors usually mean a backend/DB failure, not a frontend bug
 - The web client maps any thrown error **without a Firebase `code`** to the Arabic
   "حدث خطأ غير متوقع. حاول مرة أخرى." So a 500 from any backend call during login/signup shows
