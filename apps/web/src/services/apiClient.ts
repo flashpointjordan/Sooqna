@@ -5,7 +5,7 @@ const DEFAULT_API_BASE = "http://localhost:5000/api";
 /** Abort public requests after 15 s — avoids infinite skeleton on 504s */
 const REQUEST_TIMEOUT_MS = 15_000;
 
-function apiBase(): string {
+export function apiBase(): string {
   return process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ?? DEFAULT_API_BASE;
 }
 
