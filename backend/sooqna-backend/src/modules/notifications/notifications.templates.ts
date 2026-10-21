@@ -231,16 +231,18 @@ function render(type: NotificationType, payload: NotificationEventPayload): Rend
         entityId: cleanId(payload.announcementId),
         metadata: { announcementId: cleanId(payload.announcementId) },
       };
-    case NotificationType.SECURITY_ALERT:
+    case NotificationType.SECURITY_ALERT: {
+      const field = payload.changedField === "role" ? "صلاحية الحساب" : payload.changedField === "accountStatus" ? "حالة الحساب" : "إعدادات الحساب";
       return {
         category: categoryFor(payload.eventType),
         title: "تنبيه أمني للحساب",
-        body: "لاحظنا نشاطاً أمنياً يحتاج إلى مراجعة. تحقق من إعدادات حسابك.",
+        body: `تم تغيير ${field} في حسابك. راجع إعدادات الحساب للتأكد من صحة التغيير.`,
         actionUrl: "/me/settings",
         entityType: "securityAlert",
         entityId: cleanId(payload.alertId),
-        metadata: { alertId: cleanId(payload.alertId) },
+        metadata: { alertId: cleanId(payload.alertId), ...(payload.targetUserId ? { targetUserId: cleanId(payload.targetUserId) } : {}), ...(payload.changedField ? { changedField: payload.changedField } : {}) },
       };
+    }
     default:
       return assertNever(payload);
   }

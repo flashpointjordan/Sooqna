@@ -4,6 +4,8 @@ export type CleanupStore = {
   deleteProcessedOutbox(cutoff: Date): Promise<number>;
   deleteDeadOutbox(cutoff: Date): Promise<number>;
 };
+let lastCleanupTotals = { notifications: 0, processedOutbox: 0, deadOutbox: 0 };
+export function getCleanupTotals() { return { ...lastCleanupTotals }; }
 export async function cleanupNotifications(store: CleanupStore, now = new Date()): Promise<{ notifications: number; processedOutbox: number; deadOutbox: number }> {
   let notifications = 0;
   while (true) {
@@ -14,5 +16,6 @@ export async function cleanupNotifications(store: CleanupStore, now = new Date()
   }
   const processedOutbox = await store.deleteProcessedOutbox(new Date(now.getTime() - 14 * 86400000));
   const deadOutbox = await store.deleteDeadOutbox(new Date(now.getTime() - 30 * 86400000));
-  return { notifications, processedOutbox, deadOutbox };
+  lastCleanupTotals = { notifications, processedOutbox, deadOutbox };
+  return lastCleanupTotals;
 }

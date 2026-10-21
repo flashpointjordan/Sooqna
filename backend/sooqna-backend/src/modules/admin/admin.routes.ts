@@ -15,6 +15,8 @@ import { logAuditEvent } from "../audit/audit.service";
 import { enqueueNotificationEvent } from "../notifications/notifications.producer";
 import { enqueueSavedSearchMatchesForListing } from "../notifications/listing-notification-producers";
 import { adminNotificationBroadcastBodySchema } from "../notifications/notifications.schemas";
+import { getNotificationBroker } from "../notifications/notifications.broker";
+import { getCleanupTotals } from "../notifications/notifications.cleanup";
 
 type PageParams = {
   limit: number;
@@ -55,7 +57,7 @@ adminRouter.get("/notifications/health", async (_req, res) => {
     prisma.notificationOutbox.count({ where: { state: "FAILED" } }),
     prisma.notificationOutbox.count({ where: { state: "DEAD" } }),
   ]);
-  res.json({ success: true, data: { pendingOutbox: pending, oldestPendingAgeMs: oldest ? Date.now() - oldest.createdAt.getTime() : null, processedOutbox: processed, failedOutbox: failed, deadOutbox: dead } });
+  res.json({ success: true, data: { pendingOutbox: pending, oldestPendingAgeMs: oldest ? Date.now() - oldest.createdAt.getTime() : null, processedOutbox: processed, failedOutbox: failed, deadOutbox: dead, activeSse: getNotificationBroker().activeCount(), cleanupTotals: getCleanupTotals() } });
 });
 
 function pageParams(req: Request, max = 100): PageParams {
@@ -680,6 +682,7 @@ adminRouter.patch("/users/:id", async (req, res) => {
     ...(nextStatus ? { accountStatus: nextStatus } : {}),
     updatedAt: new Date(),
   };
+  const securityAuditId = generateId("aud");
   const user = await prisma.$transaction(async (tx) => {
     const updated = await tx.user.update({
       where: { firebaseUid: req.params.id },
@@ -687,7 +690,9 @@ adminRouter.patch("/users/:id", async (req, res) => {
       select: { id: true, firebaseUid: true, email: true, name: true, role: true, accountStatus: true, isEmailVerified: true, lastLoginAt: true, createdAt: true, updatedAt: true },
     });
     if (nextRole || nextStatus) {
-      await enqueueNotificationEvent({ payload: { eventType: "SECURITY_ALERT", recipientId: updated.firebaseUid, alertId: `account-change:${updated.firebaseUid}:${updated.updatedAt.toISOString()}` }, aggregateType: "user", aggregateId: updated.firebaseUid, recipientId: updated.firebaseUid, dedupeKey: `security:account-change:${updated.firebaseUid}:${updated.updatedAt.toISOString()}` }, tx);
+      const changedField = nextRole ? "role" : "accountStatus";
+      const changedTo = nextRole ?? nextStatus ?? "";
+      await enqueueNotificationEvent({ payload: { eventType: "SECURITY_ALERT", recipientId: updated.firebaseUid, alertId: securityAuditId, targetUserId: updated.firebaseUid, changedField, changedTo }, aggregateType: "user", aggregateId: updated.firebaseUid, recipientId: updated.firebaseUid, dedupeKey: `security:user-change:${securityAuditId}:${updated.firebaseUid}` }, tx);
     }
     return updated;
   });
@@ -696,7 +701,7 @@ adminRouter.patch("/users/:id", async (req, res) => {
     action: "admin.user.update",
     targetType: "user",
     targetId: user.firebaseUid,
-    metadata: cleanMetadata({ role: nextRole ?? null, accountStatus: nextStatus ?? null }),
+    metadata: cleanMetadata({ auditId: securityAuditId, role: nextRole ?? null, accountStatus: nextStatus ?? null }),
   });
   res.json({
     success: true,

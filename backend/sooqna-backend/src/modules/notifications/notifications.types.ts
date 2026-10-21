@@ -89,6 +89,9 @@ export type NotificationEventPayload =
       eventType: "SECURITY_ALERT";
       recipientId: string;
       alertId: string;
+      targetUserId?: string;
+      changedField?: "role" | "accountStatus";
+      changedTo?: string;
     };
 
 export type NotificationCursor = {

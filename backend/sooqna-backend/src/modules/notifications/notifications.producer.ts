@@ -82,7 +82,12 @@ export function projectNotificationEventPayload(value: unknown): NotificationEve
       return { ...base, eventType, savedSearchId: requiredString(source, "savedSearchId"), savedSearchName: requiredString(source, "savedSearchName"), query, matchingListingIds: source.matchingListingIds, totalCount: source.totalCount } as NotificationEventPayload;
     }
     case "SYSTEM_ANNOUNCEMENT": { const actionUrl = source.actionUrl === null ? null : optionalString(source, "actionUrl"); return { ...base, eventType, announcementId: requiredString(source, "announcementId"), title: requiredString(source, "title"), body: requiredString(source, "body"), ...(actionUrl === undefined ? {} : { actionUrl }) } as NotificationEventPayload; }
-    case "SECURITY_ALERT": return { ...base, eventType, alertId: requiredString(source, "alertId") } as NotificationEventPayload;
+    case "SECURITY_ALERT": {
+      const changedField = source.changedField === "role" || source.changedField === "accountStatus" ? source.changedField : undefined;
+      const changedTo = typeof source.changedTo === "string" ? source.changedTo : undefined;
+      const targetUserId = typeof source.targetUserId === "string" ? source.targetUserId : undefined;
+      return { ...base, eventType, alertId: requiredString(source, "alertId"), ...(targetUserId ? { targetUserId } : {}), ...(changedField ? { changedField } : {}), ...(changedTo ? { changedTo } : {}) } as NotificationEventPayload;
+    }
     default: throw new AppError(400, "Invalid notification event type.", "VALIDATION_ERROR");
   }
 }
