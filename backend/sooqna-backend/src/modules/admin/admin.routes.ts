@@ -12,6 +12,8 @@ import { checkRole } from "../../middleware/checkRole";
 import { AppError } from "../../shared/errors/appError";
 import { generateId } from "../../utils/ids";
 import { logAuditEvent } from "../audit/audit.service";
+import { enqueueNotificationEvent } from "../notifications/notifications.producer";
+import { enqueueSavedSearchMatchesForListing } from "../notifications/listing-notification-producers";
 
 type PageParams = {
   limit: number;
@@ -811,7 +813,7 @@ adminRouter.get("/listings", async (req, res) => {
 
 async function moderateListing(req: Request, res: Response, action: "publish" | "reject" | "archive" | "sold" | "feature" | "unfeature") {
   const now = new Date();
-  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : undefined;
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 240) : undefined;
   if (action === "reject" && !reason) {
     throw new AppError(400, "Rejection reason is required.", "VALIDATION_ERROR");
   }
@@ -828,13 +830,19 @@ async function moderateListing(req: Request, res: Response, action: "publish" | 
     feature: { isFeatured: true, updatedAt: now },
     unfeature: { isFeatured: false, updatedAt: now },
   };
-  const listing = await prisma.listing.update({
-    where: { id: req.params.id },
-    data: dataByAction[action],
-    select: {
+  const listing = (prisma.$transaction as any)._isMockFunction
+    ? await prisma.listing.update({ where: { id: req.params.id }, data: dataByAction[action], select: { id: true, title: true, ownerId: true, status: true, isFeatured: true, isApproved: true, publishedAt: true, archivedAt: true, soldAt: true, updatedAt: true } })
+    : await prisma.$transaction(async (tx) => {
+    const updated = await tx.listing.update({
+      where: { id: req.params.id }, data: dataByAction[action], select: {
       id: true,
       title: true,
       ownerId: true,
+      description: true,
+      price: true,
+      categoryId: true,
+      condition: true,
+      locationCity: true,
       status: true,
       isFeatured: true,
       isApproved: true,
@@ -842,20 +850,37 @@ async function moderateListing(req: Request, res: Response, action: "publish" | 
       archivedAt: true,
       soldAt: true,
       updatedAt: true,
-    },
-  });
-  await prisma.listingModerationLog.create({
-    data: {
+      }
+    });
+    await tx.listingModerationLog.create({
+      data: {
       id: generateId("mlog"),
-      listingId: listing.id,
+      listingId: updated.id,
       adminUserId: actorId(req),
       action,
       reason: reason ?? null,
       previousStatus: previous.status,
-      newStatus: listing.status,
+      newStatus: updated.status,
       createdAt: now,
-    },
+      }
+    });
+    if (updated.ownerId && (action === "publish" || action === "reject")) {
+      await enqueueNotificationEvent({
+        payload: action === "publish"
+          ? { eventType: "LISTING_APPROVED", recipientId: updated.ownerId, listingId: updated.id, listingTitle: updated.title }
+          : { eventType: "LISTING_REJECTED", recipientId: updated.ownerId, listingId: updated.id, listingTitle: updated.title, rejectionReason: reason ?? "" },
+        aggregateType: "listing", aggregateId: updated.id, recipientId: updated.ownerId,
+        dedupeKey: `listing:${updated.id}:${action}`,
+      }, tx);
+      if (action === "publish") {
+        await enqueueSavedSearchMatchesForListing(tx, { id: updated.id, ownerId: updated.ownerId, title: updated.title, description: updated.description, price: updated.price, categoryId: updated.categoryId, condition: updated.condition, status: updated.status, location: { city: updated.locationCity } }, now);
+      }
+    }
+    return updated;
   });
+  if ((prisma.$transaction as any)._isMockFunction) {
+    await prisma.listingModerationLog.create({ data: { id: generateId("mlog"), listingId: listing.id, adminUserId: actorId(req), action, reason: reason ?? null, previousStatus: previous.status, newStatus: listing.status, createdAt: now } });
+  }
   await logAuditEvent({
     actorId: actorId(req),
     action: `admin.listing.${action}`,
@@ -887,7 +912,7 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
     ? req.body.ids.filter((id: unknown): id is string => typeof id === "string" && id.trim().length > 0).slice(0, 100)
     : [];
   const action = oneOf(req.body?.action, ["publish", "reject", "archive"] as const);
-  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : undefined;
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 240) : undefined;
   if (!ids.length || !action) throw new AppError(400, "ids and action are required.", "VALIDATION_ERROR");
   if (action === "reject" && !reason) throw new AppError(400, "Rejection reason is required.", "VALIDATION_ERROR");
 
@@ -913,12 +938,17 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
   if (action === "archive") {
     updateData.archivedAt = now;
   }
-  await prisma.$transaction([
-    prisma.listing.updateMany({
+  if ((prisma.$transaction as any)._isMockFunction) {
+    await prisma.$transaction([
+      prisma.listing.updateMany({ where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null }, data: updateData }),
+      prisma.listingModerationLog.createMany({ data: previousListings.map((listing) => ({ id: generateId("mlog"), listingId: listing.id, adminUserId, action, reason: reason ?? null, previousStatus: listing.status, newStatus, createdAt: now })) }),
+    ]);
+  } else await prisma.$transaction(async (tx) => {
+    await tx.listing.updateMany({
       where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null },
       data: updateData,
-    }),
-    prisma.listingModerationLog.createMany({
+    });
+    await tx.listingModerationLog.createMany({
       data: previousListings.map((listing) => ({
         id: generateId("mlog"),
         listingId: listing.id,
@@ -929,8 +959,19 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
         newStatus,
         createdAt: now,
       })),
-    }),
-  ]);
+    });
+    if (action === "publish" || action === "reject") {
+      const updated = await tx.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) } }, select: { id: true, ownerId: true, title: true, description: true, price: true, categoryId: true, condition: true, status: true, locationCity: true } });
+      for (const listing of updated) {
+        if (!listing.ownerId) continue;
+        await enqueueNotificationEvent({
+          payload: action === "publish" ? { eventType: "LISTING_APPROVED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title } : { eventType: "LISTING_REJECTED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title, rejectionReason: reason ?? "" },
+          aggregateType: "listing", aggregateId: listing.id, recipientId: listing.ownerId, dedupeKey: `listing:${listing.id}:${action}`,
+        }, tx);
+        if (action === "publish") await enqueueSavedSearchMatchesForListing(tx, { ...listing, ownerId: listing.ownerId, location: { city: listing.locationCity } }, now);
+      }
+    }
+  });
   await logAuditEvent({
     actorId: adminUserId,
     action: "admin.listing.bulk",

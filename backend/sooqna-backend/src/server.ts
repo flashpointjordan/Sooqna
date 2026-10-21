@@ -7,6 +7,7 @@ import { PrismaNotificationsRepository } from "./modules/notifications/notificat
 import { NotificationsService } from "./modules/notifications/notifications.service";
 import { createNotificationWorker } from "./modules/notifications/notifications.worker";
 import { createNotificationPublisher, NotificationBroker, setNotificationBroker, setNotificationPublisher } from "./modules/notifications/notifications.broker";
+import { startListingExpirationScheduler } from "./modules/notifications/listing-expiration.job";
 
 type LifecycleDependencies = {
   listen?: (port: number, callback: () => void) => Server;
@@ -27,6 +28,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
     publishSignal,
     logger,
   });
+  let expirationScheduler: { stop: () => void } | undefined;
   let server: Server | undefined;
   let stopping: Promise<void> | undefined;
   const drainTimeoutMs = Math.max(1, deps.drainTimeoutMs ?? 10_000);
@@ -36,6 +38,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
       server = (deps.listen ?? ((port, callback) => app.listen(port, callback)))(env.port, () => {
         logger.info(`sooqna-backend listening on http://localhost:${env.port}`, { env: env.nodeEnv, port: env.port });
         worker.start();
+        expirationScheduler = startListingExpirationScheduler({ prisma });
       });
       return server;
     },
@@ -43,6 +46,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
       if (stopping) return stopping;
       stopping = (async () => {
         broker.beginShutdown();
+        expirationScheduler?.stop();
         const closing = server ? new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve())) : Promise.resolve();
         try {
           const drained = await waitForWorker(worker.stop(), drainTimeoutMs);
