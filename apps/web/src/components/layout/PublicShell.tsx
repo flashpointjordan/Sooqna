@@ -8,6 +8,7 @@ import { SearchBar } from "@/components/layout/SearchBar";
 import { ScrollToTopButton } from "@/components/layout/ScrollToTopButton";
 import { BottomNav } from "@/components/layout/BottomNav";
 import { AdminNavLink } from "@/components/layout/AdminNavLink";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 
 export function PublicShell({
   children,
@@ -24,8 +25,9 @@ export function PublicShell({
         <div className="border-b border-[var(--border)] bg-[var(--surface)]">
           <div className="relative mx-auto flex max-w-[1110px] items-center justify-center px-4 py-2.5 sm:px-6 md:justify-between">
             {/* ThemeSwitcher: absolute on physical left on mobile */}
-            <div className="absolute left-4 top-1/2 -translate-y-1/2 md:hidden">
+            <div className="absolute left-4 top-1/2 flex -translate-y-1/2 items-center gap-2 md:hidden">
               <ThemeSwitcher />
+              <NotificationBell />
             </div>
 
             <Link href="/" className="flex items-center gap-3">
