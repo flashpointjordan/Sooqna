@@ -19,7 +19,8 @@ export async function runListingExpirationJob({ prisma, now = () => new Date() }
   for (const listing of expired as any[]) {
     if (!listing.ownerId) continue;
     await prisma.$transaction(async (tx: any) => {
-      await tx.listing.update({ where: { id: listing.id }, data: { status: "archived", archivedAt: current, updatedAt: current } });
+      const archived = await tx.listing.updateMany({ where: { id: listing.id, status: "published", expiresAt: { lte: current }, deletedAt: null }, data: { status: "archived", archivedAt: current, updatedAt: current } });
+      if (!archived.count) return;
       await enqueueNotificationEvent({ payload: { eventType: "LISTING_EXPIRED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title }, aggregateType: "listing", aggregateId: listing.id, recipientId: listing.ownerId, dedupeKey: `listing:${listing.id}:expired` }, tx);
     });
   }

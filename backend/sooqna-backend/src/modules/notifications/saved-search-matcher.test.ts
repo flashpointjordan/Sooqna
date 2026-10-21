@@ -15,4 +15,9 @@ describe("saved-search matcher", () => {
   it("creates a deterministic UTC-hour aggregation key from publication time", () => {
     expect(savedSearchAggregationKey("search-1", new Date("2026-08-24T10:42:00.000Z"))).toBe("search-1:2026-08-24T10");
   });
+
+  it("keeps owner exclusion stable for matching listings", () => {
+    expect(matchesSavedSearch(listing, { q: "شقة" }, "owner-1")).toBe(false);
+    expect(matchesSavedSearch(listing, { q: "شقة" }, "buyer-1")).toBe(true);
+  });
 });

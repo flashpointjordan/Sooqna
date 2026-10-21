@@ -3,9 +3,11 @@ import { enqueueNotificationEvent } from "./notifications.producer";
 import { matchesSavedSearch, savedSearchAggregationKey } from "./saved-search-matcher";
 
 export async function enqueueSavedSearchMatchesForListing(tx: Prisma.TransactionClient, listing: { id: string; ownerId: string; title: string; description: string; price: number; categoryId: string; condition: string; status: string; location: { city: string } }, eventCreatedAt: Date): Promise<number> {
-  const searches = await tx.savedSearch.findMany({ select: { id: true, userId: true, name: true, query: true } });
   let matched = 0;
-  for (const search of searches) {
+  for (let skip = 0; ; skip += 200) {
+    const searches = await tx.savedSearch.findMany({ select: { id: true, userId: true, name: true, query: true }, orderBy: { id: "asc" }, take: 200, skip });
+    if (!searches.length) break;
+    for (const search of searches) {
     const query = (search.query && typeof search.query === "object" && !Array.isArray(search.query) ? search.query : {}) as Record<string, unknown>;
     if (!matchesSavedSearch(listing, query, search.userId)) continue;
     matched += 1;
@@ -16,6 +18,8 @@ export async function enqueueSavedSearchMatchesForListing(tx: Prisma.Transaction
       dedupeKey: `saved-search:${search.id}:${listing.id}`,
       aggregationKey: savedSearchAggregationKey(search.id, eventCreatedAt),
     }, tx);
+    }
+    if (searches.length < 200) break;
   }
   return matched;
 }
