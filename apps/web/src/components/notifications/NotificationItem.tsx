@@ -18,7 +18,7 @@ export function NotificationItem({ item }: { item: NotificationItemDto }) {
   };
   return (
     <div className={`group relative flex w-full gap-3 border-b border-[var(--border)] px-4 py-3 text-right transition hover:bg-[var(--surface-muted)] ${item.readAt ? "" : "bg-[var(--chip)]/30"}`}>
-      <button type="button" onClick={activate} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } }} className="flex min-w-0 flex-1 items-start gap-3 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]" aria-label={item.title}>
+      <button type="button" onClick={activate} className="flex min-w-0 flex-1 items-start gap-3 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]" aria-label={item.title}>
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--chip)] text-lg" aria-hidden="true">{iconText[presentation.icon]}</span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
