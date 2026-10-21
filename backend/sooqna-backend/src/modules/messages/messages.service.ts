@@ -210,11 +210,12 @@ const MESSAGE_PREVIEW_LIMIT = 160;
 function notificationMessagePreview(message: Message): string {
   if (message.type !== "text") return "Sent an attachment";
 
-  return message.text
+  const sanitized = message.text
     .replace(/\b(?:password|token)\b(?:\s*[:=]\s*\S+)?/gi, "[redacted]")
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted]")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MESSAGE_PREVIEW_LIMIT);
+    .trim();
+
+  return Array.from(sanitized).slice(0, MESSAGE_PREVIEW_LIMIT).join("");
 }
 

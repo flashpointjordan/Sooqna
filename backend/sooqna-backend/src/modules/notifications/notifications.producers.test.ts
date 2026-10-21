@@ -77,7 +77,7 @@ describe("marketplace engagement notification producers", () => {
       getUnreadCountMapForUser: jest.fn(),
     };
     const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
-    const body = `hello ${"x".repeat(240)} password=super-secret token=top-secret alice@example.com`;
+    const body = `xx password=super-secret token=top-secret alice@example.com ${"😀".repeat(200)}`;
     const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
 
     const message = await service.createMessage({ conversationId: "conv-1", senderId: "sender-1", type: "text", text: body });
@@ -96,6 +96,17 @@ describe("marketplace engagement notification producers", () => {
     expect(JSON.stringify(facts)).not.toContain("super-secret");
     expect(JSON.stringify(facts)).not.toContain("top-secret");
     expect(JSON.stringify(facts)).not.toContain("alice@example.com");
+    const previews = facts
+      .filter((payload): payload is Extract<NotificationEventPayload, { eventType: "MESSAGE_RECEIVED" }> => payload.eventType === "MESSAGE_RECEIVED")
+      .map((payload) => payload.messagePreview);
+    expect(previews).toHaveLength(2);
+    for (const preview of previews) {
+      expect(Array.from(preview)).toHaveLength(160);
+      expect(preview).not.toMatch(/[\uD800-\uDBFF]$/);
+      expect(preview).not.toContain("super-secret");
+      expect(preview).not.toContain("top-secret");
+      expect(preview).not.toContain("alice@example.com");
+    }
   });
 
   it("keeps a persisted message successful when notification enqueue fails", async () => {

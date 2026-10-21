@@ -1,7 +1,9 @@
 import * as path from "node:path";
+import { Prisma } from "@prisma/client";
 import { env } from "../../../config/env";
 import { prisma } from "../../../config/prisma";
 import { readJsonArrayFile, writeJsonArrayFile } from "../../../utils/fileStore";
+import { generateId } from "../../../utils/ids";
 import type { FavoriteRecord } from "../favorites.types";
 
 export interface FavoritesRepository {
@@ -45,32 +47,15 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
 
   async upsert(record: FavoriteRecord): Promise<{ created: boolean }> {
     try {
-      const existing = await prisma.favorite.findUnique({
-        where: {
-          userId_listingId: {
-            userId: record.userId,
-            listingId: record.listingId ?? null,
-          },
-        },
-        select: { id: true },
-      });
-      await prisma.favorite.upsert({
-        where: {
-          userId_listingId: {
-            userId: record.userId,
-            listingId: record.listingId ?? null,
-          },
-        },
-        update: {
-          createdAt: new Date(record.createdAt),
-        },
-        create: {
-          userId: record.userId,
-          listingId: record.listingId,
-          createdAt: new Date(record.createdAt),
-        },
-      });
-      return { created: !existing };
+      const rows = await prisma.$queryRaw<Array<{ created: boolean }>>(Prisma.sql`
+        INSERT INTO "Favorite" ("id", "userId", "listingId", "createdAt")
+        VALUES (${generateId("fav")}, ${record.userId}, ${record.listingId}, ${new Date(record.createdAt)})
+        ON CONFLICT ("userId", "listingId") DO UPDATE
+        SET "createdAt" = EXCLUDED."createdAt"
+        RETURNING (xmax = 0) AS "created"
+      `);
+      if (rows.length !== 1) throw new Error("Favorite upsert did not return a result.");
+      return { created: rows[0].created };
     } catch (error) {
       if (useJsonFallback()) {
         const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
