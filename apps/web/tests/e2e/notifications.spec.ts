@@ -44,9 +44,10 @@ test("message notification opens the conversation and marks itself read", async 
   await page.getByTestId("notification-bell").click();
   await expect(page.getByTestId("notification-popover")).toBeVisible();
   await expect(page.getByTestId(`notification-item-${item.id}`)).toContainText(item.body);
-  await page.getByTestId(`notification-item-${item.id}`).getByRole("button", { name: item.title }).click();
+  await expect(page.getByTestId("notification-count")).toHaveText("1");
+  const markReadRequest = page.waitForRequest((request) => request.url().includes(`/api/notifications/${item.id}/read`) && request.method() === "POST");
+  await Promise.all([markReadRequest, page.getByTestId(`notification-item-${item.id}`).getByRole("button", { name: item.title }).click()]);
   await expect(page).toHaveURL(/\/messages\?conversation=e2e-conversation/);
-  await expect(page.getByTestId("notification-count")).toHaveCount(0);
 });
 
 test("moderation notification uses safe copy and internal listing action", async ({ page }) => {
@@ -57,5 +58,18 @@ test("moderation notification uses safe copy and internal listing action", async
   await page.getByTestId("notification-bell").click();
   await expect(page.getByTestId(`notification-item-${item.id}`)).toContainText("تم قبول إعلانك");
   await page.getByTestId(`notification-item-${item.id}`).getByRole("button", { name: item.title }).click();
+  await expect(page).toHaveURL(/\/listings\/e2e-listing$/);
+});
+
+test("moderation rejection notification shows the safe reason summary", async ({ page }) => {
+  test.skip(!authenticated, "requires E2E_EMAIL and E2E_PASSWORD Firebase credentials");
+  const item = { id: "e2e-moderation-rejection-1", title: "تعذر نشر إعلانك", body: "السبب: معلومات الإعلان تحتاج إلى مراجعة.", actionUrl: "/listings/e2e-listing" };
+  await stubNotificationApi(page, item);
+  await signIn(page);
+  await page.getByTestId("notification-bell").click();
+  const notification = page.getByTestId(`notification-item-${item.id}`);
+  await expect(notification).toContainText("تعذر نشر إعلانك");
+  await expect(notification).toContainText("معلومات الإعلان تحتاج إلى مراجعة");
+  await notification.getByRole("button", { name: item.title }).click();
   await expect(page).toHaveURL(/\/listings\/e2e-listing$/);
 });
