@@ -943,7 +943,7 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
       prisma.listing.updateMany({ where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null }, data: updateData }),
       prisma.listingModerationLog.createMany({ data: previousListings.map((listing) => ({ id: generateId("mlog"), listingId: listing.id, adminUserId, action, reason: reason ?? null, previousStatus: listing.status, newStatus, createdAt: now })) }),
     ]);
-    const fallbackListings = await prisma.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) } }, select: { id: true, ownerId: true, title: true } });
+    const fallbackListings = await prisma.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) }, deletedAt: null, status: newStatus }, select: { id: true, ownerId: true, title: true } });
     if (Array.isArray(fallbackListings) && (prisma as any).notificationOutbox) {
       for (const item of fallbackListings) if (item.ownerId && (action === "publish" || action === "reject")) {
         await enqueueNotificationEvent({ payload: action === "publish" ? { eventType: "LISTING_APPROVED", recipientId: item.ownerId, listingId: item.id, listingTitle: item.title } : { eventType: "LISTING_REJECTED", recipientId: item.ownerId, listingId: item.id, listingTitle: item.title, rejectionReason: reason ?? "" }, aggregateType: "listing", aggregateId: item.id, recipientId: item.ownerId, dedupeKey: `listing:${item.id}:${action}` }, prisma as any);
@@ -967,7 +967,7 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
       })),
     });
     if (action === "publish" || action === "reject") {
-      const updated = await tx.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) } }, select: { id: true, ownerId: true, title: true, description: true, price: true, categoryId: true, condition: true, status: true, locationCity: true } });
+      const updated = await tx.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) }, deletedAt: null, status: newStatus }, select: { id: true, ownerId: true, title: true, description: true, price: true, categoryId: true, condition: true, status: true, locationCity: true } });
       for (const listing of updated) {
         if (!listing.ownerId) continue;
         await enqueueNotificationEvent({
