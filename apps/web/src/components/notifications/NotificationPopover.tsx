@@ -26,7 +26,7 @@ export function NotificationPopover({ onClose, bellRef }: { onClose: () => void;
     return () => { document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", onPointer); };
   }, [bellRef, close]);
   return (
-    <div ref={panelRef} id="notification-popover" role="dialog" aria-label="الإشعارات" className="absolute end-0 top-full z-50 mt-2 w-[min(92vw,380px)] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]">
+    <div data-testid="notification-popover" ref={panelRef} id="notification-popover" role="dialog" aria-label="الإشعارات" className="absolute end-0 top-full z-50 mt-2 w-[min(92vw,380px)] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-lg)]">
       <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
         <h2 className="text-sm font-bold">الإشعارات</h2>
         <button type="button" onClick={() => void markAllRead()} disabled={!unreadCount} className="text-xs font-semibold text-[var(--brand)] disabled:opacity-40">تحديد الكل كمقروء</button>
