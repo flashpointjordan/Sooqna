@@ -14,7 +14,8 @@ export const notificationApi = {
   markRead(id: string) { return apiFetch(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST", authenticated: true }); },
   markAllRead() { return apiFetch("/notifications/read-all", { method: "POST", authenticated: true }); },
   remove(id: string) { return apiFetch(`/notifications/${encodeURIComponent(id)}`, { method: "DELETE", authenticated: true }); },
-  preferences(preferences: Record<string, boolean>) { return apiFetch("/notifications/preferences", { method: "PUT", body: JSON.stringify(preferences), authenticated: true }); },
+  getPreferences() { return apiFetch<{ preferences: Record<string, boolean> }>("/notifications/preferences", { authenticated: true }); },
+  preferences(preferences: Record<string, boolean>) { return apiFetch<{ preferences: Record<string, boolean> }>("/notifications/preferences", { method: "PUT", body: JSON.stringify(preferences), authenticated: true }); },
 };
 
 export async function openNotificationStream({ signal, onSignal, onDisconnect }: { signal?: AbortSignal; onSignal: (value: NotificationSignal) => void; onDisconnect?: (error?: unknown) => void }): Promise<void> {
