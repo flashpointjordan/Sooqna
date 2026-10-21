@@ -98,7 +98,7 @@ describe("marketplace engagement notification producers", () => {
     expect(JSON.stringify(facts)).not.toContain("alice@example.com");
   });
 
-  it("rejects the message transaction when notification enqueue fails", async () => {
+  it("keeps a persisted message successful when notification enqueue fails", async () => {
     const { MessagesService } = await import("../messages/messages.service");
     const repo = {
       findConversationById: jest.fn().mockResolvedValue(conversation()),
@@ -106,12 +106,15 @@ describe("marketplace engagement notification producers", () => {
       updateConversation: jest.fn().mockResolvedValue(conversation()),
     } as unknown as MessagesRepository;
     const enqueue = jest.fn().mockRejectedValue(new Error("outbox unavailable"));
+    const log = jest.spyOn(logger, "error").mockImplementation(() => undefined);
     const service = new (MessagesService as unknown as new (repo: MessagesRepository, enqueue: Enqueue) => InstanceType<typeof MessagesService>)(repo, enqueue);
 
-    await expect(service.createMessage({ conversationId: "conv-1", senderId: "sender-1", type: "text", text: "Hello" })).rejects.toThrow("outbox unavailable");
+    await expect(service.createMessage({ conversationId: "conv-1", senderId: "sender-1", type: "text", text: "Hello" })).resolves.toMatchObject({ conversationId: "conv-1" });
+    expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "MESSAGE_RECEIVED", messageId: expect.any(String), outcome: "failed" }));
+    log.mockRestore();
   });
 
-  it("notifies a listing owner once only when a favorite is newly created, never for remove or self-favorites", async () => {
+  it("notifies a listing owner when a favorite is newly created", async () => {
     const { FavoritesService } = await import("../favorites/favorites.service");
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
     const upsert = jest.fn().mockResolvedValue({ created: true });
@@ -134,31 +137,57 @@ describe("marketplace engagement notification producers", () => {
       payload: { eventType: "LISTING_FAVORITED_AGGREGATE", recipientId: "owner-1", listingId: "listing-1", listingTitle: "Trusted listing", favoriteCount: 4 },
     }));
 
-    upsert.mockResolvedValue({ created: false });
+  });
+
+  it("does not enqueue for duplicate favorites, self-favorites, or removal", async () => {
+    const { FavoritesService } = await import("../favorites/favorites.service");
+    mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "owner-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
+    const repo = {
+      listByUser: jest.fn(),
+      upsert: jest.fn().mockResolvedValue({ created: false }),
+      remove: jest.fn(),
+      countByListing: jest.fn().mockResolvedValue(4),
+    } as unknown as FavoritesRepository;
+    const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
+    const service = new (FavoritesService as unknown as new (repo: FavoritesRepository, enqueue: Enqueue) => InstanceType<typeof FavoritesService>)(repo, enqueue);
+
     await service.add("actor-1", "listing-1");
     await service.remove("actor-1", "listing-1");
     mockListingFindById.mockResolvedValue({ id: "listing-1", ownerId: "actor-1", title: "Trusted listing", favoritesCount: 0, updatedAt: "2026-08-24T00:00:00.000Z" });
-    upsert.mockResolvedValue({ created: true });
+    (repo.upsert as jest.Mock).mockResolvedValue({ created: true });
     await service.add("actor-1", "listing-1");
-    expect(enqueue).toHaveBeenCalledTimes(1);
+
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("notifies the seller after review persistence and stats recalculation without leaking review text", async () => {
     const { ReviewsService } = await import("../reviews/reviews.service");
     mockPrisma.listing.findFirst.mockResolvedValue({ id: "listing-1", ownerId: "seller-1", title: "Trusted listing" });
     mockPrisma.user.findUnique.mockResolvedValue({ name: "Reviewer One" });
+    const calls: string[] = [];
     const repo: jest.Mocked<ReviewsRepository> = {
-      create: jest.fn().mockImplementation(async (review) => review),
+      create: jest.fn().mockImplementation(async (review) => {
+        calls.push("review-created");
+        return review;
+      }),
       findByReviewerAndListing: jest.fn().mockResolvedValue(null),
       listBySeller: jest.fn(),
       listByListing: jest.fn(),
     };
-    const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockResolvedValue({});
+    mockPrisma.user.update.mockImplementation(async () => {
+      calls.push("stats-recalculated");
+      return {};
+    });
+    const enqueue: jest.MockedFunction<Enqueue> = jest.fn().mockImplementation(async () => {
+      calls.push("notification-enqueued");
+      return {};
+    });
     const service = new (ReviewsService as unknown as new (repo: ReviewsRepository, enqueue: Enqueue) => InstanceType<typeof ReviewsService>)(repo, enqueue);
 
     const review = await service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 5, comment: "password=not-for-notifications" });
 
     expect(mockPrisma.user.update).toHaveBeenCalled();
+    expect(calls).toEqual(["review-created", "stats-recalculated", "notification-enqueued"]);
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
       aggregateType: "review",
       aggregateId: review.id,
@@ -179,5 +208,6 @@ describe("marketplace engagement notification producers", () => {
 
     await expect(service.createReview({ sellerId: "seller-1", reviewerId: "reviewer-1", listingId: "listing-1", rating: 4, comment: "Nice" })).resolves.toMatchObject({ sellerId: "seller-1" });
     expect(log).toHaveBeenCalledWith("Notification event enqueue failed", expect.objectContaining({ eventType: "REVIEW_RECEIVED", reviewId: expect.any(String), outcome: "failed" }));
+    log.mockRestore();
   });
 });

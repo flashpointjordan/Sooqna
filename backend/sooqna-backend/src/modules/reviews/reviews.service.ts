@@ -1,12 +1,17 @@
 import { generateId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { AppError } from "../../shared/errors/appError";
+import { logger } from "../../config/logger";
 import { prisma } from "../../config/prisma";
+import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "../notifications/notifications.producer";
 import type { ReviewsRepository } from "./repositories/reviews.repository";
 import type { Review, PublicReview, PublicSellerProfile } from "./reviews.types";
 
 export class ReviewsService {
-  constructor(private readonly repo: ReviewsRepository) {}
+  constructor(
+    private readonly repo: ReviewsRepository,
+    private readonly enqueue = enqueueNotificationEvent
+  ) {}
 
   async createReview(input: {
     sellerId: string;
@@ -50,6 +55,34 @@ export class ReviewsService {
     });
 
     await this.recalculateSellerStats(input.sellerId);
+    try {
+      const reviewer = await prisma.user.findUnique({
+        where: { firebaseUid: input.reviewerId },
+        select: { name: true },
+      });
+      await this.enqueue({
+        aggregateType: "review",
+        aggregateId: review.id,
+        recipientId: input.sellerId,
+        dedupeKey: `review:${review.id}:${input.sellerId}`,
+        payload: {
+          eventType: "REVIEW_RECEIVED",
+          recipientId: input.sellerId,
+          reviewId: review.id,
+          reviewerId: input.reviewerId,
+          reviewerName: reviewer?.name.trim() || "A marketplace user",
+          listingId: listing.id,
+          listingTitle: listing.title,
+          rating: review.rating,
+        },
+      } satisfies EnqueueNotificationEventInput);
+    } catch {
+      logger.error("Notification event enqueue failed", {
+        eventType: "REVIEW_RECEIVED",
+        reviewId: review.id,
+        outcome: "failed",
+      });
+    }
     return review;
   }
 

@@ -1,6 +1,8 @@
 import { generateId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { AppError } from "../../shared/errors/appError";
+import { logger } from "../../config/logger";
+import { enqueueNotificationEvent, type EnqueueNotificationEventInput } from "../notifications/notifications.producer";
 import type { MessagesRepository } from "./repositories/messages.repository";
 import type { Conversation, Message, MessageType } from "./messages.types";
 
@@ -21,7 +23,10 @@ type CreateMessageInput = {
 };
 
 export class MessagesService {
-  constructor(private readonly repo: MessagesRepository) {}
+  constructor(
+    private readonly repo: MessagesRepository,
+    private readonly enqueue = enqueueNotificationEvent
+  ) {}
 
   async createConversation(input: CreateConversationInput): Promise<Conversation> {
     if (!input.listingId.trim()) {
@@ -96,8 +101,8 @@ export class MessagesService {
       deletedAt: null,
     };
 
-    await this.repo.createMessage(message);
-    await this.repo.updateConversation({
+    const persistedMessage = await this.repo.createMessage(message);
+    const persistedConversation = await this.repo.updateConversation({
       ...conversation,
       lastMessageText: input.text,
       lastMessageSenderId: input.senderId,
@@ -106,7 +111,42 @@ export class MessagesService {
       updatedAt: now,
     });
 
-    return message;
+    const senderName = persistedConversation.participants[persistedMessage.senderId]?.fullName.trim() || "A marketplace user";
+    const listingTitle = persistedConversation.listingSnapshot.title.trim() || "Marketplace listing";
+    const messagePreview = notificationMessagePreview(persistedMessage);
+    const recipientIds = Array.from(new Set(persistedConversation.participantIds))
+      .filter((participantId) => participantId && participantId !== persistedMessage.senderId);
+
+    for (const recipientId of recipientIds) {
+      try {
+        await this.enqueue({
+          aggregateType: "message",
+          aggregateId: persistedMessage.id,
+          recipientId,
+          dedupeKey: `message:${persistedMessage.id}:${recipientId}`,
+          payload: {
+            eventType: "MESSAGE_RECEIVED",
+            recipientId,
+            conversationId: persistedConversation.id,
+            messageId: persistedMessage.id,
+            senderId: persistedMessage.senderId,
+            senderName,
+            listingId: persistedConversation.listingId,
+            listingTitle,
+            messagePreview,
+          },
+        } satisfies EnqueueNotificationEventInput);
+      } catch {
+        logger.error("Notification event enqueue failed", {
+          eventType: "MESSAGE_RECEIVED",
+          messageId: persistedMessage.id,
+          recipientId,
+          outcome: "failed",
+        });
+      }
+    }
+
+    return persistedMessage;
   }
 
   async getConversation(id: string): Promise<Conversation | null> {
@@ -163,5 +203,18 @@ export class MessagesService {
     const totalUnread = Object.values(byConversation).reduce((sum, count) => sum + count, 0);
     return { totalUnread, byConversation };
   }
+}
+
+const MESSAGE_PREVIEW_LIMIT = 160;
+
+function notificationMessagePreview(message: Message): string {
+  if (message.type !== "text") return "Sent an attachment";
+
+  return message.text
+    .replace(/\b(?:password|token)\b(?:\s*[:=]\s*\S+)?/gi, "[redacted]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MESSAGE_PREVIEW_LIMIT);
 }
 

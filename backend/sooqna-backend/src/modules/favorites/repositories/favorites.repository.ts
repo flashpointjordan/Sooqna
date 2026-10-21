@@ -6,7 +6,7 @@ import type { FavoriteRecord } from "../favorites.types";
 
 export interface FavoritesRepository {
   listByUser(userId: string): Promise<FavoriteRecord[]>;
-  upsert(record: FavoriteRecord): Promise<void>;
+  upsert(record: FavoriteRecord): Promise<{ created: boolean }>;
   remove(userId: string, listingId: string): Promise<void>;
   countByListing(listingId: string): Promise<number>;
 }
@@ -43,8 +43,17 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
     }
   }
 
-  async upsert(record: FavoriteRecord): Promise<void> {
+  async upsert(record: FavoriteRecord): Promise<{ created: boolean }> {
     try {
+      const existing = await prisma.favorite.findUnique({
+        where: {
+          userId_listingId: {
+            userId: record.userId,
+            listingId: record.listingId ?? null,
+          },
+        },
+        select: { id: true },
+      });
       await prisma.favorite.upsert({
         where: {
           userId_listingId: {
@@ -61,6 +70,7 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
           createdAt: new Date(record.createdAt),
         },
       });
+      return { created: !existing };
     } catch (error) {
       if (useJsonFallback()) {
         const items = readJsonArrayFile<FavoriteRecord>(favoritesDataPath);
@@ -71,7 +81,7 @@ export class PrismaFavoritesRepository implements FavoritesRepository {
           items.push(record);
           writeJsonArrayFile(favoritesDataPath, items);
         }
-        return;
+        return { created: !exists };
       }
       throw new Error("Failed to save favorite.", { cause: error });
     }
