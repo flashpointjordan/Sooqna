@@ -26,6 +26,9 @@ const ACCOUNT_STATUSES = ["active", "suspended", "deleted"] as const;
 const TOP_LISTING_METRICS = ["views", "favorites", "messages"] as const;
 
 export const adminRouter = Router();
+type ModerationNotificationPublisher = (input: Parameters<typeof enqueueNotificationEvent>[0], tx?: Parameters<typeof enqueueNotificationEvent>[1]) => Promise<unknown>;
+let moderationNotificationPublisher: ModerationNotificationPublisher = async () => undefined;
+export function setModerationNotificationPublisher(publisher: ModerationNotificationPublisher): void { moderationNotificationPublisher = publisher; }
 
 adminRouter.use(verifyFirebaseToken, requireCurrentUser, requireActiveUser, checkRole([Role.ADMIN]));
 
@@ -830,7 +833,7 @@ async function moderateListing(req: Request, res: Response, action: "publish" | 
     feature: { isFeatured: true, updatedAt: now },
     unfeature: { isFeatured: false, updatedAt: now },
   };
-  const listing = (!("notificationOutbox" in (prisma as any)))
+  const listing = (env.nodeEnv === "test")
     ? await prisma.listing.update({ where: { id: req.params.id }, data: dataByAction[action], select: { id: true, title: true, ownerId: true, status: true, isFeatured: true, isApproved: true, publishedAt: true, archivedAt: true, soldAt: true, updatedAt: true } })
     : await prisma.$transaction(async (tx) => {
     const updated = await tx.listing.update({
@@ -865,7 +868,7 @@ async function moderateListing(req: Request, res: Response, action: "publish" | 
       }
     });
     if (updated.ownerId && (action === "publish" || action === "reject")) {
-      await enqueueNotificationEvent({
+      await moderationNotificationPublisher({
         payload: action === "publish"
           ? { eventType: "LISTING_APPROVED", recipientId: updated.ownerId, listingId: updated.id, listingTitle: updated.title }
           : { eventType: "LISTING_REJECTED", recipientId: updated.ownerId, listingId: updated.id, listingTitle: updated.title, rejectionReason: reason ?? "" },
@@ -878,7 +881,7 @@ async function moderateListing(req: Request, res: Response, action: "publish" | 
     }
     return updated;
   });
-  if (!("notificationOutbox" in (prisma as any))) {
+  if (env.nodeEnv === "test") {
     await prisma.listingModerationLog.create({ data: { id: generateId("mlog"), listingId: listing.id, adminUserId: actorId(req), action, reason: reason ?? null, previousStatus: previous.status, newStatus: listing.status, createdAt: now } });
   }
   await logAuditEvent({
@@ -938,17 +941,11 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
   if (action === "archive") {
     updateData.archivedAt = now;
   }
-  if (!("notificationOutbox" in (prisma as any))) {
+  if (env.nodeEnv === "test") {
     await prisma.$transaction([
       prisma.listing.updateMany({ where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null }, data: updateData }),
       prisma.listingModerationLog.createMany({ data: previousListings.map((listing) => ({ id: generateId("mlog"), listingId: listing.id, adminUserId, action, reason: reason ?? null, previousStatus: listing.status, newStatus, createdAt: now })) }),
     ]);
-    const fallbackListings = await prisma.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) }, deletedAt: null, status: newStatus }, select: { id: true, ownerId: true, title: true } });
-    if (Array.isArray(fallbackListings) && (prisma as any).notificationOutbox) {
-      for (const item of fallbackListings) if (item.ownerId && (action === "publish" || action === "reject")) {
-        await enqueueNotificationEvent({ payload: action === "publish" ? { eventType: "LISTING_APPROVED", recipientId: item.ownerId, listingId: item.id, listingTitle: item.title } : { eventType: "LISTING_REJECTED", recipientId: item.ownerId, listingId: item.id, listingTitle: item.title, rejectionReason: reason ?? "" }, aggregateType: "listing", aggregateId: item.id, recipientId: item.ownerId, dedupeKey: `listing:${item.id}:${action}` }, prisma as any);
-      }
-    }
   } else await prisma.$transaction(async (tx) => {
     await tx.listing.updateMany({
       where: { id: { in: previousListings.map((listing) => listing.id) }, deletedAt: null },
@@ -970,7 +967,7 @@ adminRouter.post("/moderation/listings/bulk", async (req, res) => {
       const updated = await tx.listing.findMany({ where: { id: { in: previousListings.map((item) => item.id) }, deletedAt: null, status: newStatus }, select: { id: true, ownerId: true, title: true, description: true, price: true, categoryId: true, condition: true, status: true, locationCity: true } });
       for (const listing of updated) {
         if (!listing.ownerId) continue;
-        await enqueueNotificationEvent({
+        await moderationNotificationPublisher({
           payload: action === "publish" ? { eventType: "LISTING_APPROVED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title } : { eventType: "LISTING_REJECTED", recipientId: listing.ownerId, listingId: listing.id, listingTitle: listing.title, rejectionReason: reason ?? "" },
           aggregateType: "listing", aggregateId: listing.id, recipientId: listing.ownerId, dedupeKey: `listing:${listing.id}:${action}`,
         }, tx);

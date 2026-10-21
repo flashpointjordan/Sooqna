@@ -8,6 +8,8 @@ import { NotificationsService } from "./modules/notifications/notifications.serv
 import { createNotificationWorker } from "./modules/notifications/notifications.worker";
 import { createNotificationPublisher, NotificationBroker, setNotificationBroker, setNotificationPublisher } from "./modules/notifications/notifications.broker";
 import { startListingExpirationScheduler } from "./modules/notifications/listing-expiration.job";
+import { setModerationNotificationPublisher } from "./modules/admin/admin.routes";
+import { enqueueNotificationEvent } from "./modules/notifications/notifications.producer";
 
 type LifecycleDependencies = {
   listen?: (port: number, callback: () => void) => Server;
@@ -21,6 +23,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
   const broker = new NotificationBroker();
   setNotificationBroker(broker);
   const publishSignal = createNotificationPublisher(broker);
+  setModerationNotificationPublisher((input, tx) => enqueueNotificationEvent(input, tx));
   setNotificationPublisher(publishSignal);
   const worker = deps.worker ?? createNotificationWorker({
     repository,
