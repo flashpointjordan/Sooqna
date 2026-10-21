@@ -18,12 +18,12 @@ const categories: Array<{ key: NotificationCategory | "ALL"; label: string }> = 
 export function NotificationCenter() {
   const router = useRouter();
   const { currentUser, loading: authLoading } = useAuth();
-  const { items, unreadCount, loading, error, refresh, markAllRead } = useNotifications();
+  const { items, unreadCount, nextCursor, loading, error, refresh, markAllRead } = useNotifications();
   const [filter, setFilter] = useState<NotificationFilter>({ category: "ALL", unreadOnly: false });
   const [cursor, setCursor] = useState<string | null>(null);
   const [allItems, setAllItems] = useState(items);
   const [loadingMore, setLoadingMore] = useState(false);
-  useEffect(() => { if (!cursor) setAllItems(items); }, [cursor, items]);
+  useEffect(() => { setAllItems(items); setCursor(nextCursor); }, [items, nextCursor]);
   useEffect(() => { if (!authLoading && currentUser === null) router.replace(`/login?next=%2Fnotifications`); }, [authLoading, currentUser, router]);
   const visible = useMemo(() => filterNotificationItems(allItems, filter), [allItems, filter]);
   const groups = useMemo(() => groupNotificationItems(visible), [visible]);

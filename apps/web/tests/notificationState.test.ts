@@ -6,12 +6,12 @@ const item = (id: string, readAt: string | null = null) => ({
   actionUrl: null, metadata: {}, readAt, createdAt: "2026-08-24T00:00:00Z",
 });
 
-assert.deepEqual(notificationReducer(initialNotificationState, { type: "HYDRATE", items: [item("a")], unreadCount: 1 }), {
-  ...initialNotificationState, items: [item("a")], unreadCount: 1,
+assert.deepEqual(notificationReducer(initialNotificationState, { type: "HYDRATE", items: [item("a")], unreadCount: 1, nextCursor: "cursor-1" }), {
+  ...initialNotificationState, items: [item("a")], unreadCount: 1, nextCursor: "cursor-1",
 });
 assert.equal(notificationReducer({ ...initialNotificationState, unreadCount: 1 }, { type: "SIGNAL_COUNT", unreadCount: -4 }).unreadCount, 0);
 
-const hydrated = notificationReducer(initialNotificationState, { type: "HYDRATE", items: [item("a"), item("b")], unreadCount: 2 });
+const hydrated = notificationReducer(initialNotificationState, { type: "HYDRATE", items: [item("a"), item("b")], unreadCount: 2, nextCursor: null });
 const readOptimistic = notificationReducer(hydrated, { type: "MARK_READ_OPTIMISTIC", id: "a" });
 assert.equal(readOptimistic.items[0].readAt, "optimistic");
 assert.equal(readOptimistic.unreadCount, 1);

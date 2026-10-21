@@ -3,17 +3,18 @@ import type { NotificationItemDto } from "@/types/notification";
 export type NotificationState = {
   items: NotificationItemDto[];
   unreadCount: number;
+  nextCursor: string | null;
   loading: boolean;
   error: string | null;
   reconnecting: boolean;
 };
 
 export const initialNotificationState: NotificationState = {
-  items: [], unreadCount: 0, loading: false, error: null, reconnecting: false,
+  items: [], unreadCount: 0, nextCursor: null, loading: false, error: null, reconnecting: false,
 };
 
 type Action =
-  | { type: "HYDRATE"; items: NotificationItemDto[]; unreadCount: number }
+  | { type: "HYDRATE"; items: NotificationItemDto[]; unreadCount: number; nextCursor: string | null }
   | { type: "SIGNAL_COUNT"; unreadCount: number }
   | { type: "MARK_READ_OPTIMISTIC"; id: string }
   | { type: "MARK_READ_ROLLBACK"; previous: NotificationState }
@@ -29,7 +30,7 @@ const clamp = (count: number) => Math.max(0, count);
 
 export function notificationReducer(state: NotificationState, action: Action): NotificationState {
   switch (action.type) {
-    case "HYDRATE": return { ...state, items: action.items, unreadCount: clamp(action.unreadCount), loading: false, error: null, reconnecting: false };
+    case "HYDRATE": return { ...state, items: action.items, unreadCount: clamp(action.unreadCount), nextCursor: action.nextCursor, loading: false, error: null, reconnecting: false };
     case "SIGNAL_COUNT": return { ...state, unreadCount: clamp(action.unreadCount) };
     case "MARK_READ_OPTIMISTIC": {
       const item = state.items.find((entry) => entry.id === action.id);

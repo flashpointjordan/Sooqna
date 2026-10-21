@@ -29,7 +29,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     setState((value) => notificationReducer(value, { type: "LOADING", value: true }));
     try {
       const result = await notificationApi.list({ limit: 20 });
-      if (mountedRef.current) setState((value) => notificationReducer(value, { type: "HYDRATE", items: result.items, unreadCount: result.unreadCount }));
+      if (mountedRef.current) setState((value) => notificationReducer(value, { type: "HYDRATE", items: result.items, unreadCount: result.unreadCount, nextCursor: result.nextCursor }));
     } catch {
       if (mountedRef.current) setState((value) => notificationReducer(value, { type: "ERROR", message: recoverableError }));
     }
