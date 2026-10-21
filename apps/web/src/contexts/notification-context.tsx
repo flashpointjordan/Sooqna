@@ -49,8 +49,11 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       } catch { /* disconnects are retried by lifecycle events */ }
       finally { if (controllerRef.current === controller) controllerRef.current = null; }
     })();
-    runnerRef.current = runner.finally(() => { if (runnerRef.current === runner) runnerRef.current = null; });
-    return runnerRef.current;
+    const wrapped = runner.finally(() => {
+      if (runnerRef.current === wrapped) runnerRef.current = null;
+    });
+    runnerRef.current = wrapped;
+    return wrapped;
   }, [currentUser, refresh]);
 
   useEffect(() => {
