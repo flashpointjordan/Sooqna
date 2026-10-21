@@ -21,7 +21,8 @@
     "db:migrate-json": "tsx scripts/migrate-json-to-db.ts",
     "backfill:search": "tsx scripts/backfill-search-text.ts",
     "uploads:cleanup-orphans": "tsx scripts/cleanup-orphan-uploads.ts",
-    "notifications:worker-once": "tsx src/modules/notifications/notifications.worker.ts"
+    "notifications:worker-once": "tsx src/modules/notifications/notifications.worker.ts",
+    "notifications:cleanup": "tsx scripts/cleanup-notifications.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.7.0",

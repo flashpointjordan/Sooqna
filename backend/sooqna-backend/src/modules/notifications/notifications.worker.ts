@@ -33,6 +33,7 @@ type WorkerDeps = {
   logger?: { error(message: string, meta?: Record<string, unknown>): void; warn?(message: string, meta?: Record<string, unknown>): void };
   publishSignal?: (userId: string, notificationId: string, unreadCount: number) => Promise<void> | void;
   processEvent?: (row: NotificationOutboxRecord) => Promise<void>;
+  processBroadcasts?: () => Promise<void>;
 };
 
 const STALE_PROCESSING_MS = 5 * 60_000;
@@ -66,6 +67,7 @@ export function createNotificationWorker(deps: WorkerDeps) {
   }
 
   async function execute(): Promise<void> {
+    await deps.processBroadcasts?.();
     const recoveredAt = now();
     const recovery = await deps.repository.recoverStaleProcessing(recoveredAt, new Date(recoveredAt.getTime() - STALE_PROCESSING_MS));
     for (const dead of recovery.dead) deps.logger?.error("Notification outbox event is dead.", { outboxId: dead.id, attempts: dead.attempts, reason: "stale_processing" });

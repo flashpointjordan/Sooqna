@@ -14,6 +14,7 @@ import { generateId } from "../../utils/ids";
 import { logAuditEvent } from "../audit/audit.service";
 import { enqueueNotificationEvent } from "../notifications/notifications.producer";
 import { enqueueSavedSearchMatchesForListing } from "../notifications/listing-notification-producers";
+import { adminNotificationBroadcastBodySchema } from "../notifications/notifications.schemas";
 
 type PageParams = {
   limit: number;
@@ -31,6 +32,31 @@ let moderationNotificationPublisher: ModerationNotificationPublisher = async () 
 export function setModerationNotificationPublisher(publisher: ModerationNotificationPublisher): void { moderationNotificationPublisher = publisher; }
 
 adminRouter.use(verifyFirebaseToken, requireCurrentUser, requireActiveUser, checkRole([Role.ADMIN]));
+
+adminRouter.post("/notification-broadcasts", async (req, res) => {
+  const parsed = adminNotificationBroadcastBodySchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, "Invalid notification broadcast.", "VALIDATION_ERROR");
+  const body = parsed.data;
+  const broadcast = await prisma.notificationBroadcast.create({ data: { audience: body.audience, audienceValue: body.audienceValue ?? {}, title: body.title, body: body.body, actionUrl: body.actionUrl ?? null, createdBy: actorId(req) } });
+  await logAuditEvent({ actorId: actorId(req), action: "admin.notification.broadcast.create", targetType: "notification_broadcast", targetId: broadcast.id, metadata: cleanMetadata({ audience: body.audience, audienceValue: body.audienceValue }) });
+  res.status(201).json({ success: true, data: { id: broadcast.id, status: broadcast.status, audience: broadcast.audience } });
+});
+
+adminRouter.get("/notification-broadcasts", async (_req, res) => {
+  const rows = await prisma.notificationBroadcast.findMany({ orderBy: { createdAt: "desc" }, take: 50, select: { id: true, audience: true, status: true, deliveredCount: true, createdBy: true, createdAt: true } });
+  res.json({ success: true, data: rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() })) });
+});
+
+adminRouter.get("/notifications/health", async (_req, res) => {
+  const [pending, oldest, processed, failed, dead] = await Promise.all([
+    prisma.notificationOutbox.count({ where: { state: "PENDING" } }),
+    prisma.notificationOutbox.findFirst({ where: { state: "PENDING" }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
+    prisma.notificationOutbox.count({ where: { state: "PROCESSED" } }),
+    prisma.notificationOutbox.count({ where: { state: "FAILED" } }),
+    prisma.notificationOutbox.count({ where: { state: "DEAD" } }),
+  ]);
+  res.json({ success: true, data: { pendingOutbox: pending, oldestPendingAgeMs: oldest ? Date.now() - oldest.createdAt.getTime() : null, processedOutbox: processed, failedOutbox: failed, deadOutbox: dead } });
+});
 
 function pageParams(req: Request, max = 100): PageParams {
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, max));
@@ -654,21 +680,16 @@ adminRouter.patch("/users/:id", async (req, res) => {
     ...(nextStatus ? { accountStatus: nextStatus } : {}),
     updatedAt: new Date(),
   };
-  const user = await prisma.user.update({
-    where: { firebaseUid: req.params.id },
-    data,
-    select: {
-      id: true,
-      firebaseUid: true,
-      email: true,
-      name: true,
-      role: true,
-      accountStatus: true,
-      isEmailVerified: true,
-      lastLoginAt: true,
-      createdAt: true,
-      updatedAt: true,
-    },
+  const user = await prisma.$transaction(async (tx) => {
+    const updated = await tx.user.update({
+      where: { firebaseUid: req.params.id },
+      data,
+      select: { id: true, firebaseUid: true, email: true, name: true, role: true, accountStatus: true, isEmailVerified: true, lastLoginAt: true, createdAt: true, updatedAt: true },
+    });
+    if (nextRole || nextStatus) {
+      await enqueueNotificationEvent({ payload: { eventType: "SECURITY_ALERT", recipientId: updated.firebaseUid, alertId: `account-change:${updated.firebaseUid}:${updated.updatedAt.toISOString()}` }, aggregateType: "user", aggregateId: updated.firebaseUid, recipientId: updated.firebaseUid, dedupeKey: `security:account-change:${updated.firebaseUid}:${updated.updatedAt.toISOString()}` }, tx);
+    }
+    return updated;
   });
   await logAuditEvent({
     actorId: actorId(req),

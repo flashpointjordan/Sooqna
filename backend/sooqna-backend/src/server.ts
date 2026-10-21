@@ -10,6 +10,7 @@ import { createNotificationPublisher, NotificationBroker, setNotificationBroker,
 import { startListingExpirationScheduler } from "./modules/notifications/listing-expiration.job";
 import { setModerationNotificationPublisher } from "./modules/admin/admin.routes";
 import { enqueueNotificationEvent } from "./modules/notifications/notifications.producer";
+import { processPendingBroadcasts } from "./modules/notifications/notifications.broadcast";
 
 type LifecycleDependencies = {
   listen?: (port: number, callback: () => void) => Server;
@@ -29,6 +30,7 @@ export function createServerLifecycle(deps: LifecycleDependencies = {}) {
     repository,
     service: new NotificationsService(repository, { publishSignal }),
     publishSignal,
+    processBroadcasts: () => processPendingBroadcasts(prisma),
     logger,
   });
   let expirationScheduler: { stop: () => void } | undefined;
