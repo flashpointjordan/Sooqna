@@ -11,6 +11,7 @@ import { getAuthErrorMessage, sendPasswordResetLink } from "@/services/authServi
 import { ModernAvatar } from "@/components/ui/ModernAvatar";
 import { getAccountSettingsActionState } from "@/components/me/accountSettingsActions";
 import { getResendVerificationState } from "@/components/auth/resendVerificationState";
+import { NotificationPreferences } from "@/components/notifications/NotificationPreferences";
 
 export function AccountSettingsForm() {
   const router = useRouter();
@@ -353,6 +354,8 @@ export function AccountSettingsForm() {
               تسجيل الخروج
             </button>
           </section>
+
+          <NotificationPreferences />
 
           {/* روابط سريعة */}
           <section className="motion-section rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-5">

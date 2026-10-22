@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { ModernAvatar } from "@/components/ui/ModernAvatar";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 
 export function PublicNavActions() {
   const router = useRouter();
@@ -61,6 +62,7 @@ export function PublicNavActions() {
           verified={Boolean(currentUser.emailVerified)}
         />
       </div>
+      <NotificationBell />
       <Link
         href="/me"
         className="rounded-full bg-[var(--brand)] px-4 py-2 text-xs font-semibold text-[var(--brand-contrast)] shadow-[var(--shadow-sm)] transition hover:opacity-90"
