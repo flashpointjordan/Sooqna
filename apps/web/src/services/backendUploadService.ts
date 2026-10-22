@@ -1,12 +1,8 @@
 import { auth } from "@/lib/firebase";
+import { apiBase } from "@/services/apiClient";
 
-const DEFAULT_API_BASE = "http://localhost:5000/api";
 const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-
-function apiBase(): string {
-  return process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ?? DEFAULT_API_BASE;
-}
 
 export type UploadListingImageResult = {
   success: true;
