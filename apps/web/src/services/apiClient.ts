@@ -1,12 +1,15 @@
 import { auth } from "@/lib/firebase";
 import { ApiRequestError, parseRetryAfterSeconds } from "@/services/apiRequestError";
+import { resolveBrowserApiBase } from "@/services/browserApiBase";
 
-const DEFAULT_API_BASE = "http://localhost:5000/api";
 /** Abort public requests after 15 s — avoids infinite skeleton on 504s */
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export function apiBase(): string {
-  return process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ?? DEFAULT_API_BASE;
+  return resolveBrowserApiBase(
+    process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL,
+    process.env.NODE_ENV === "production" && typeof window !== "undefined",
+  );
 }
 
 export async function getAuthHeader(): Promise<Record<string, string>> {
