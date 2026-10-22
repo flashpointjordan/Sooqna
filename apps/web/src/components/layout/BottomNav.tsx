@@ -4,10 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { isBottomNavActive } from "@/components/layout/bottomNavState";
+import { useNotifications } from "@/contexts/notification-context";
 
 export function BottomNav() {
   const pathname = usePathname();
   const { currentUser } = useAuth();
+  const { unreadCount } = useNotifications();
 
   const active = (href: string) =>
     isBottomNavActive(pathname, href)
@@ -57,6 +59,11 @@ export function BottomNav() {
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
         </svg>
         رسائل
+      </Link>
+
+      <Link href="/notifications" dir="rtl" aria-label="الإشعارات" title="الإشعارات" className={`motion-press relative flex flex-col items-center gap-0.5 px-3 py-2 text-[10px] font-medium transition-colors ${active("/notifications")}`}>
+        <span className="relative"><span aria-hidden="true" className="text-xl">🔔</span>{unreadCount > 0 ? <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-[var(--brand)] px-1 text-center text-[9px] font-bold text-white">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}</span>
+        إشعارات
       </Link>
 
       {/* حساب */}
