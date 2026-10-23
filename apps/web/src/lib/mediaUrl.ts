@@ -24,8 +24,8 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * If `url` points at localhost loopback, replace origin with the configured public uploads origin.
- * Relative URLs and already-public hosts are returned unchanged.
+ * Rewrite loopback and legacy Sooqna uploads to the configured public origin.
+ * Relative URLs and unrelated public hosts are returned unchanged.
  */
 export function resolvePublicMediaUrl(url: string | undefined | null): string | undefined {
   if (url == null || url === "") return undefined;
@@ -37,7 +37,8 @@ export function resolvePublicMediaUrl(url: string | undefined | null): string | 
 
   try {
     const parsed = new URL(trimmed);
-    if (!isLoopbackHost(parsed.hostname)) return trimmed;
+    const legacyUpload = parsed.hostname === "un.flashpointjordan.com" && parsed.pathname.startsWith("/uploads/");
+    if (!isLoopbackHost(parsed.hostname) && !legacyUpload) return trimmed;
 
     const base = new URL(publicBase.includes("://") ? publicBase : `https://${publicBase}`);
     return `${base.origin}${parsed.pathname}${parsed.search}`;

@@ -31,7 +31,11 @@ jobs:
           cache-dependency-path: backend/sooqna-backend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        timeout-minutes: 8
+        env:
+          npm_config_fetch_retries: "2"
+          npm_config_fetch_timeout: "60000"
+        run: npm ci --no-audit --no-fund --prefer-offline --foreground-scripts --loglevel=info
 
       - name: Generate Prisma client
         run: npm run prisma:generate
@@ -73,7 +77,11 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        timeout-minutes: 8
+        env:
+          npm_config_fetch_retries: "2"
+          npm_config_fetch_timeout: "60000"
+        run: npm ci --no-audit --no-fund --prefer-offline --foreground-scripts --loglevel=info
 
       - name: Audit production dependencies
         continue-on-error: true
@@ -84,6 +92,12 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test production resource origins
+        run: |
+          node ./node_modules/typescript/bin/tsc --module commonjs --target es2020 --esModuleInterop --skipLibCheck --outDir "$RUNNER_TEMP/web-regression-tests" tests/browserApiBase.test.ts tests/mediaUrl.test.ts
+          node "$RUNNER_TEMP/web-regression-tests/tests/browserApiBase.test.js"
+          node "$RUNNER_TEMP/web-regression-tests/tests/mediaUrl.test.js"
 
       - name: Build
         env:
